@@ -4,32 +4,55 @@ import (
 	"context"
 	"log"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
 
-	"github.com/redis/go-redis/v9"
+	"xvault/internal/worker/orchestrator"
+	"xvault/internal/worker/client"
 )
 
 func main() {
 	workerID := mustGetenv("WORKER_ID")
-	redisURL := mustGetenv("REDIS_URL")
+	hubBaseURL := mustGetenv("HUB_BASE_URL")
 	storageBase := getenv("WORKER_STORAGE_BASE", "/var/lib/xvault/backups")
 
-	log.Printf("worker starting: worker_id=%s storage_base=%s", workerID, storageBase)
+	log.Printf("worker starting: worker_id=%s hub=%s storage=%s", workerID, hubBaseURL, storageBase)
 
-	opt, err := redis.ParseURL(redisURL)
-	if err != nil {
-		log.Fatalf("invalid REDIS_URL: %v", err)
-	}
+	// Create Hub client
+	hubClient := client.NewHubClient(hubBaseURL)
 
-	rdb := redis.NewClient(opt)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Create orchestrator
+	orch := orchestrator.NewOrchestrator(workerID, hubClient, storageBase)
+
+	// Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("redis ping failed: %v", err)
+
+	// Handle shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Start worker in a goroutine
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- orch.Run(ctx)
+	}()
+
+	// Wait for signal or error
+	select {
+	case <-sigChan:
+		log.Printf("worker %s received shutdown signal", workerID)
+		cancel()
+		if err := orch.Shutdown(context.Background()); err != nil {
+			log.Printf("shutdown error: %v", err)
+		}
+	case err := <-errChan:
+		if err != nil {
+			log.Fatalf("worker error: %v", err)
+		}
 	}
 
-	log.Printf("worker ready (placeholder). next: job loop + connectors + packaging")
-	select {}
+	log.Printf("worker %s stopped", workerID)
 }
 
 func getenv(key, fallback string) string {

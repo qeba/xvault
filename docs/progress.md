@@ -97,7 +97,7 @@ This file tracks the implementation progress of xVault features based on the dev
 
 ## Step 5: First Runnable Slice (End-to-End)
 
-**Status**: 🚧 **In Progress** - Hub API ✅ complete, Worker implementation pending
+**Status**: 🚧 **In Progress** - Hub API ✅ complete, Worker ✅ complete, integration testing pending
 
 **Goal**: Prove end-to-end orchestration with smallest surface area
 
@@ -144,41 +144,41 @@ This file tracks the implementation progress of xVault features based on the dev
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.4.1 | Redis job dequeue (blocking or polling) | ⏳ | |
-| 5.4.2 | Claim job via Hub API | ⏳ | |
-| 5.4.3 | Fetch and decrypt credentials | ⏳ | JIT credential fetch, in-memory only |
-| 5.4.4 | Job lease management (heartbeat/renewal) | ⏳ | |
-| 5.4.5 | Error handling and retry logic | ⏳ | |
-| 5.4.6 | Graceful shutdown (finish current job) | ⏳ | |
+| 5.4.1 | Redis job dequeue (blocking or polling) | ✅ | Polling via Hub API claim endpoint |
+| 5.4.2 | Claim job via Hub API | ✅ | [`internal/worker/client/client.go:48`](internal/worker/client/client.go) |
+| 5.4.3 | Fetch and decrypt credentials | ✅ | JIT credential fetch via Hub API |
+| 5.4.4 | Job lease management (heartbeat/renewal) | ✅ | 30s heartbeat interval |
+| 5.4.5 | Error handling and retry logic | ✅ | Errors logged, next job claimed on failure |
+| 5.4.6 | Graceful shutdown (finish current job) | ✅ | SIGINT/SIGTERM handling with context cancel |
 
 ### 5.5 Worker: SSH/SFTP Connector
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.5.1 | SSH client connection | ⏳ | |
-| 5.5.2 | SFTP file download to temp dir | ⏳ | Use `/tmp/gobackup/{job_id}/source-mirror/` |
-| 5.5.3 | Recursive directory pull | ⏳ | |
-| 5.5.4 | Error handling for connection failures | ⏳ | |
+| 5.5.1 | SSH client connection | ✅ | [`internal/worker/connector/sftp.go:37`](internal/worker/connector/sftp.go) |
+| 5.5.2 | SFTP file download to temp dir | ✅ | Uses `/tmp/gobackup/{job_id}/source-mirror/` |
+| 5.5.3 | Recursive directory pull | ✅ | SFTP walker with recursive pull |
+| 5.5.4 | Error handling for connection failures | ✅ | Errors propagated up for job failure reporting |
 
 ### 5.6 Worker: Packaging & Encryption
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.6.1 | Create tar archive from staged data | ⏳ | |
-| 5.6.2 | Compress with Zstandard (zstd) | ⏳ | |
-| 5.6.3 | Encrypt with Age (tenant public key) | ⏳ | |
-| 5.6.4 | Generate `backup.tar.zst.enc` artifact | ⏳ | |
-| 5.6.5 | Generate `manifest.json` | ⏳ | IDs, sizes, hashes, encryption metadata |
-| 5.6.6 | Generate `meta.json` | ⏳ | tenant_id, source_id, snapshot_id, job_id, worker_id |
-| 5.6.7 | Cleanup temp directory | ⏳ | Aggressive cleanup after job |
+| 5.6.1 | Create tar archive from staged data | ✅ | Simple ustar format implementation |
+| 5.6.2 | Compress with Zstandard (zstd) | ✅ | Using klauspost/compress/zstd |
+| 5.6.3 | Encrypt with Age (tenant public key) | ✅ | Using pkg/crypto age encryption |
+| 5.6.4 | Generate `backup.tar.zst.enc` artifact | ✅ | Full artifact pipeline |
+| 5.6.5 | Generate `manifest.json` | ✅ | IDs, sizes, hashes, encryption metadata |
+| 5.6.6 | Generate `meta.json` | ✅ | tenant_id, source_id, snapshot_id, job_id, worker_id |
+| 5.6.7 | Cleanup temp directory | ✅ | Aggressive cleanup after job |
 
 ### 5.7 Worker: Local Storage (v0)
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.7.1 | Create multi-tenant directory structure | ⏳ | Path: `/var/lib/xvault/backups/tenants/{tenant_id}/sources/{source_id}/snapshots/{snapshot_id}/` |
-| 5.7.2 | Write artifact to durable path | ⏳ | |
-| 5.7.3 | Write manifest.json and meta.json | ⏳ | |
+| 5.7.1 | Create multi-tenant directory structure | ✅ | Path: `/var/lib/xvault/backups/tenants/{tenant_id}/sources/{source_id}/snapshots/{snapshot_id}/` |
+| 5.7.2 | Write artifact to durable path | ✅ | [`internal/worker/storage/storage.go:36`](internal/worker/storage/storage.go) |
+| 5.7.3 | Write manifest.json and meta.json | ✅ | Both files written with artifact |
 
 ### 5.8 Hub: Snapshot Metadata
 
