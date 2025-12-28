@@ -27,6 +27,8 @@ services:
       dockerfile: deploy/docker/hub/Dockerfile
     environment:
       HUB_LISTEN_ADDR: ${HUB_LISTEN_ADDR}
+      HUB_AUTO_MIGRATE: ${HUB_AUTO_MIGRATE}
+      HUB_ENCRYPTION_KEK: ${HUB_ENCRYPTION_KEK}
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
     ports:

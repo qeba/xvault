@@ -49,6 +49,8 @@ This file tracks the implementation progress of xVault features based on the dev
 
 ## Step 4: Database Migrations
 
+**Status**: ✅ **Complete** - Full schema implemented with Goose migration tool
+
 **Goal**: Implement the minimal v0 schema from [docs/data-model.md](data-model.md)
 
 **Deliverables**:
@@ -57,23 +59,45 @@ This file tracks the implementation progress of xVault features based on the dev
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 4.1 | Set up migration tool/library | ⏳ | Need to choose: golang-migrate, goose, or custom |
-| 4.2 | Create `tenants` table | ⏳ | `id`, `name`, `plan`, timestamps |
-| 4.3 | Create `users` table | ⏳ | `id`, `tenant_id`, `email`, `password_hash`, `role`, timestamps |
-| 4.4 | Create `credentials` table | ⏳ | `id`, `tenant_id`, `kind`, `ciphertext`, `key_id`, timestamps |
-| 4.5 | Create `tenant_keys` table | ⏳ | `id`, `tenant_id`, `algorithm`, `public_key`, `encrypted_private_key`, `key_status`, timestamps |
-| 4.6 | Create `sources` table | ⏳ | `id`, `tenant_id`, `type`, `name`, `status`, `config` (JSONB), `credential_id`, timestamps |
-| 4.7 | Create `schedules` table | ⏳ | `id`, `tenant_id`, `source_id`, `cron`/`interval_minutes`, `timezone`, `enabled`, `retention_policy` (JSONB), timestamps |
-| 4.8 | Create `workers` table | ⏳ | `id`, `name`, `status`, `capabilities` (JSONB), `storage_base_path`, `last_seen_at`, timestamps |
-| 4.9 | Create `jobs` table | ⏳ | `id`, `tenant_id`, `source_id`, `type`, `status`, `priority`, `target_worker_id`, `lease_expires_at`, `attempt`, `payload` (JSONB), timestamps, error fields |
-| 4.10 | Create `snapshots` table | ⏳ | `id`, `tenant_id`, `source_id`, `job_id`, `status`, `size_bytes`, duration fields, `manifest_json`, encryption metadata, locator fields (`storage_backend`, `worker_id`, `local_path`), timestamps |
-| 4.11 | Create `audit_events` table (optional for v0) | 🔄 | Can defer if needed |
-| 4.12 | Add indexes/constraints per data-model.md | ⏳ | |
-| 4.13 | Hub runs migrations on startup OR provides `migrate` command | ⏳ | |
+| 4.1 | Set up migration tool/library | ✅ | Using Goose v3 (github.com/pressly/goose/v3) |
+| 4.2 | Create `tenants` table | ✅ | `id`, `name`, `plan`, timestamps |
+| 4.3 | Create `users` table | ✅ | `id`, `tenant_id`, `email`, `password_hash`, `role`, timestamps |
+| 4.4 | Create `credentials` table | ✅ | `id`, `tenant_id`, `kind`, `ciphertext`, `key_id`, timestamps |
+| 4.5 | Create `tenant_keys` table | ✅ | `id`, `tenant_id`, `algorithm`, `public_key`, `encrypted_private_key`, `key_status`, timestamps |
+| 4.6 | Create `sources` table | ✅ | `id`, `tenant_id`, `type`, `name`, `status`, `config` (JSONB), `credential_id`, timestamps |
+| 4.7 | Create `schedules` table | ✅ | `id`, `tenant_id`, `source_id`, `cron`/`interval_minutes`, `timezone`, `enabled`, `retention_policy` (JSONB), timestamps |
+| 4.8 | Create `workers` table | ✅ | `id`, `name`, `status`, `capabilities` (JSONB), `storage_base_path`, `last_seen_at`, timestamps |
+| 4.9 | Create `jobs` table | ✅ | `id`, `tenant_id`, `source_id`, `type`, `status`, `priority`, `target_worker_id`, `lease_expires_at`, `attempt`, `payload` (JSONB), timestamps, error fields |
+| 4.10 | Create `snapshots` table | ✅ | `id`, `tenant_id`, `source_id`, `job_id`, `status`, `size_bytes`, duration fields, `manifest_json`, encryption metadata, locator fields (`storage_backend`, `worker_id`, `local_path`), timestamps |
+| 4.11 | Create `audit_events` table (optional for v0) | ✅ | Included for complete audit trail |
+| 4.12 | Add indexes/constraints per data-model.md | ✅ | All indexes and foreign keys added |
+| 4.13 | Hub runs migrations on startup OR provides `migrate` command | ✅ | Supports `-migrate` flag and `HUB_AUTO_MIGRATE` env var |
+
+**Implementation Details**:
+- Migration file: [internal/hub/database/migrations/0001_init.sql](internal/hub/database/migrations/0001_init.sql)
+- Database package: [internal/hub/database/migrate.go](internal/hub/database/migrate.go)
+- Hub CLI: `./bin/hub -migrate` (run migrations and exit)
+- Hub CLI: `./bin/hub -migrate-status` (show migration status)
+- Auto-migrate: Set `HUB_AUTO_MIGRATE=true` to run migrations on startup
+
+**Database Types (Enums)**:
+- `user_role`: owner, admin, member
+- `key_status`: active, rotated, disabled
+- `credential_kind`: source, storage
+- `source_type`: ssh, sftp, ftp, mysql, postgres, wordpress
+- `source_status`: active, disabled
+- `schedule_status`: enabled, disabled
+- `worker_status`: online, offline, draining
+- `job_type`: backup, restore, delete_snapshot
+- `job_status`: queued, running, finalizing, completed, failed, canceled
+- `snapshot_status`: completed, failed
+- `storage_backend`: local_fs, s3
 
 ---
 
 ## Step 5: First Runnable Slice (End-to-End)
+
+**Status**: 🚧 **In Progress** - Hub API ✅ complete, Worker implementation pending
 
 **Goal**: Prove end-to-end orchestration with smallest surface area
 
@@ -87,33 +111,34 @@ This file tracks the implementation progress of xVault features based on the dev
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.1.1 | `POST /api/v1/tenants` endpoint | ⏳ | |
-| 5.1.2 | Generate tenant keypair on creation (Age/x25519) | ⏳ | Platform-managed for v0 |
-| 5.1.3 | Store tenant private key encrypted at rest | ⏳ | |
-| 5.1.4 | `GET /api/v1/tenants/:id` endpoint | ⏳ | |
+| 5.1.1 | `POST /api/v1/tenants` endpoint | ✅ | [`internal/hub/handlers/handlers.go:47`](internal/hub/handlers/handlers.go) |
+| 5.1.2 | Generate tenant keypair on creation (Age/x25519) | ✅ | [`internal/hub/service/service.go:34`](internal/hub/service/service.go) |
+| 5.1.3 | Store tenant private key encrypted at rest | ✅ | Using `HUB_ENCRYPTION_KEK` envelope encryption |
+| 5.1.4 | `GET /api/v1/tenants/:id` endpoint | 🔄 | Not implemented yet (low priority) |
 
 ### 5.2 Hub: Source & Credential Management
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.2.1 | `POST /api/v1/credentials` endpoint | ⏳ | Encrypt credentials before storing |
-| 5.2.2 | Envelope encryption implementation | ⏳ | Use `HUB_ENCRYPTION_KEK` env var |
-| 5.2.3 | `POST /api/v1/sources` endpoint | ⏳ | References `credential_id` |
-| 5.2.4 | `GET /api/v1/sources` list endpoint | ⏳ | |
-| 5.2.5 | Source config validation (SSH/SFTP) | ⏳ | host, port, user, paths |
+| 5.2.1 | `POST /api/v1/credentials` endpoint | ✅ | [`internal/hub/handlers/handlers.go:78`](internal/hub/handlers/handlers.go) |
+| 5.2.2 | Envelope encryption implementation | ✅ | [`pkg/crypto/age.go:72`](pkg/crypto/age.go) |
+| 5.2.3 | `POST /api/v1/sources` endpoint | ✅ | [`internal/hub/handlers/handlers.go:103`](internal/hub/handlers/handlers.go) |
+| 5.2.4 | `GET /api/v1/sources` list endpoint | ✅ | [`internal/hub/handlers/handlers.go:126`](internal/hub/handlers/handlers.go) |
+| 5.2.5 | Source config validation (SSH/SFTP) | 🔄 | Client-side validation only for v0 |
 
 ### 5.3 Hub: Job Queue & Orchestration
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.3.1 | `POST /api/v1/jobs` endpoint (manual trigger) | ⏳ | |
-| 5.3.2 | Job payload format definition | ⏳ | Reference `credential_id` (not plaintext secrets) |
-| 5.3.3 | Enqueue job to Redis | ⏳ | Use queue key pattern |
-| 5.3.4 | Internal: `GET /internal/jobs/claim` endpoint | ⏳ | Worker claims job, updates status=running, sets lease |
-| 5.3.5 | Internal: `POST /internal/jobs/:id/complete` endpoint | ⏳ | Worker reports completion metadata |
-| 5.3.6 | Internal: `GET /internal/credentials/:id` endpoint | ⏳ | Worker fetches encrypted creds to decrypt |
-| 5.3.7 | Internal: `POST /internal/workers/register` endpoint | ⏳ | |
-| 5.3.8 | Internal: `POST /internal/workers/heartbeat` endpoint | ⏳ | |
+| 5.3.1 | `POST /api/v1/jobs` endpoint (manual trigger) | ✅ | [`internal/hub/handlers/handlers.go:166`](internal/hub/handlers/handlers.go) |
+| 5.3.2 | Job payload format definition | ✅ | [`pkg/types/types.go:58`](pkg/types/types.go) |
+| 5.3.3 | Enqueue job to Redis | ✅ | Uses `xvault:jobs:queue` key |
+| 5.3.4 | Internal: `POST /internal/jobs/claim` endpoint | ✅ | Worker claims next queued job |
+| 5.3.5 | Internal: `POST /internal/jobs/:id/complete` endpoint | ✅ | Worker reports completion + snapshot |
+| 5.3.6 | Internal: `GET /internal/credentials/:id` endpoint | ✅ | Worker fetches encrypted creds |
+| 5.3.7 | Internal: `GET /internal/tenants/:id/public-key` endpoint | ✅ | Worker fetches tenant public key |
+| 5.3.8 | Internal: `POST /internal/workers/register` endpoint | ✅ | Worker registration |
+| 5.3.9 | Internal: `POST /internal/workers/heartbeat` endpoint | ✅ | Worker heartbeats |
 
 ### 5.4 Worker: Job Loop
 
@@ -159,10 +184,10 @@ This file tracks the implementation progress of xVault features based on the dev
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 5.8.1 | Store snapshot record in database | ⏳ | |
-| 5.8.2 | Store snapshot locator | ⏳ | `storage_backend=local_fs`, `worker_id`, `local_path` |
-| 5.8.3 | `GET /api/v1/snapshots` list endpoint | ⏳ | |
-| 5.8.4 | `GET /api/v1/snapshots/:id` details endpoint | ⏳ | |
+| 5.8.1 | Store snapshot record in database | ✅ | [`internal/hub/repository/repository.go:432`](internal/hub/repository/repository.go) |
+| 5.8.2 | Store snapshot locator | ✅ | storage_backend, worker_id, local_path |
+| 5.8.3 | `GET /api/v1/snapshots` list endpoint | ✅ | [`internal/hub/handlers/handlers.go:345`](internal/hub/handlers/handlers.go) |
+| 5.8.4 | `GET /api/v1/snapshots/:id` details endpoint | ✅ | [`internal/hub/handlers/handlers.go:368`](internal/hub/handlers/handlers.go) |
 
 ### 5.9 End-to-End Integration Test
 
@@ -288,22 +313,31 @@ When starting a new task:
 ## Quick Reference Commands
 
 ```bash
-# Start full dev stack
+# Start full dev stack (with auto-migrate enabled)
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml up --build
 
 # Build services locally
 CGO_ENABLED=0 go build -o bin/hub ./cmd/hub
 CGO_ENABLED=0 go build -o bin/worker ./cmd/worker
 
-# Run services locally (requires Postgres and Redis)
+# Run migrations manually
+export DATABASE_URL="postgres://xvault:xvault@localhost:5432/xvault?sslmode=disable"
+./bin/hub -migrate
+
+# Check migration status
+./bin/hub -migrate-status
+
+# Run Hub with auto-migrate (for local development)
 export DATABASE_URL="postgres://xvault:xvault@localhost:5432/xvault?sslmode=disable"
 export REDIS_URL="redis://localhost:6379/0"
-export HUB_ENCRYPTION_KEK="test-key-32-bytes-long!!!!!!"
+export HUB_AUTO_MIGRATE="true"
 ./bin/hub
 
+# Run Worker
 export WORKER_ID="worker-1"
 export WORKER_STORAGE_BASE="/var/lib/xvault/backups"
 export HUB_BASE_URL="http://localhost:8080"
+export REDIS_URL="redis://localhost:6379/0"
 ./bin/worker
 
 # Run tests
