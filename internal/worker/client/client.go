@@ -160,7 +160,7 @@ func (c *HubClient) RegisterWorker(ctx context.Context, req WorkerRegisterReques
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("register worker failed: status %d: %s", resp.StatusCode, string(respBody))
 	}

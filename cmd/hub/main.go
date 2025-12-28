@@ -41,11 +41,11 @@ func main() {
 	log.Println("database connection established")
 
 	// Connect to Redis
-	rdb := redis.NewClient(&redis.Options{
-		Addr:     parseRedisAddr(redisURL),
-		Password: "", // No password by default
-		DB:       0,  // Default DB
-	})
+	opt, err := redis.ParseURL(redisURL)
+	if err != nil {
+		log.Fatalf("invalid REDIS_URL: %v", err)
+	}
+	rdb := redis.NewClient(opt)
 
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
