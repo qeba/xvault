@@ -1,0 +1,20 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Env
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Docker volumes / local state
+.deploy-data/

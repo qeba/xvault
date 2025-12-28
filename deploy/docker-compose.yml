@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:18.1
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - xvault_postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:8.4.0
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  hub:
+    build:
+      context: ..
+      dockerfile: deploy/docker/hub/Dockerfile
+    environment:
+      HUB_LISTEN_ADDR: ${HUB_LISTEN_ADDR}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker/Dockerfile
+    environment:
+      WORKER_ID: ${WORKER_ID}
+      REDIS_URL: ${REDIS_URL}
+      WORKER_STORAGE_BASE: ${WORKER_STORAGE_BASE}
+      HUB_BASE_URL: http://hub:8080
+    depends_on:
+      redis:
+        condition: service_healthy
+      hub:
+        condition: service_started
+    volumes:
+      - xvault_worker_backups:${WORKER_STORAGE_BASE}
+
+volumes:
+  xvault_postgres:
+  xvault_worker_backups:
