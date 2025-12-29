@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -12,6 +11,7 @@ import (
 	"xvault/internal/worker/connector"
 	"xvault/internal/worker/packager"
 	"xvault/internal/worker/storage"
+	"xvault/pkg/crypto"
 	"xvault/pkg/types"
 )
 
@@ -20,16 +20,18 @@ type Orchestrator struct {
 	workerID      string
 	hubClient     *client.HubClient
 	storage       *storage.Storage
+	encryptionKEK string
 	pollInterval  time.Duration
 }
 
 // NewOrchestrator creates a new worker orchestrator
-func NewOrchestrator(workerID string, hubClient *client.HubClient, storageBase string) *Orchestrator {
+func NewOrchestrator(workerID string, hubClient *client.HubClient, storageBase, encryptionKEK string) *Orchestrator {
 	return &Orchestrator{
-		workerID:     workerID,
-		hubClient:    hubClient,
-		storage:      storage.NewStorage(storageBase),
-		pollInterval: 5 * time.Second,
+		workerID:      workerID,
+		hubClient:     hubClient,
+		storage:       storage.NewStorage(storageBase),
+		encryptionKEK: encryptionKEK,
+		pollInterval:  5 * time.Second,
 	}
 }
 
@@ -183,7 +185,20 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 		}, err
 	}
 
-	// Fetch tenant public key
+	// Decrypt credential using platform KEK
+	// For v0, credentials are encrypted with platform KEK so workers can decrypt them
+	plaintext, err := crypto.DecryptFromStorage(credResp.Ciphertext, o.encryptionKEK)
+	if err != nil {
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to decrypt credential: %v", err),
+		}, err
+	}
+
+	password := string(plaintext)
+
+	// Fetch tenant public key for encrypting the backup
 	keyResp, err := o.hubClient.GetTenantPublicKey(ctx, job.TenantID)
 	if err != nil {
 		return client.JobCompleteRequest{
@@ -192,24 +207,6 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 			Error:    fmt.Sprintf("failed to get tenant public key: %v", err),
 		}, err
 	}
-
-	// Decrypt credential using tenant public key
-	// Note: The credential is encrypted with the tenant's public key
-	// For v0, we need the worker to decrypt it. But Age doesn't support this without the private key.
-	// The credential should be stored encrypted with platform KEK so workers can decrypt it.
-	// For now, we'll decode the base64 and use it directly (assuming password-based auth)
-	plaintext, err := base64.StdEncoding.DecodeString(credResp.Ciphertext)
-	if err != nil {
-		return client.JobCompleteRequest{
-			WorkerID: o.workerID,
-			Status:   "failed",
-			Error:    fmt.Sprintf("failed to decode credential: %v", err),
-		}, err
-	}
-
-	// For v0, we assume the credential contains the password directly
-	// In production, this should be decrypted with the platform KEK
-	password := string(plaintext)
 
 	// Create SSH connector
 	sshConfig := &connector.SSHConfig{

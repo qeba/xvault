@@ -15,6 +15,7 @@ func main() {
 	workerID := mustGetenv("WORKER_ID")
 	hubBaseURL := mustGetenv("HUB_BASE_URL")
 	storageBase := getenv("WORKER_STORAGE_BASE", "/var/lib/xvault/backups")
+	encryptionKEK := mustGetenv("WORKER_ENCRYPTION_KEK")
 
 	log.Printf("worker starting: worker_id=%s hub=%s storage=%s", workerID, hubBaseURL, storageBase)
 
@@ -22,7 +23,7 @@ func main() {
 	hubClient := client.NewHubClient(hubBaseURL)
 
 	// Create orchestrator
-	orch := orchestrator.NewOrchestrator(workerID, hubClient, storageBase)
+	orch := orchestrator.NewOrchestrator(workerID, hubClient, storageBase, encryptionKEK)
 
 	// Setup context with cancellation
 	ctx, cancel := context.WithCancel(context.Background())

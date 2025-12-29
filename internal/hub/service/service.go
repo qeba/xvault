@@ -88,26 +88,21 @@ type CreateCredentialRequest struct {
 
 // CreateCredential creates encrypted credentials for a tenant
 func (s *Service) CreateCredential(ctx context.Context, req CreateCredentialRequest) (*repository.Credential, error) {
-	// Get tenant's public key
-	key, err := s.repo.GetActiveTenantKey(ctx, req.TenantID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get tenant key: %w", err)
-	}
-
 	// Decode plaintext (base64 encoded)
 	plaintext, err := base64.StdEncoding.DecodeString(req.Plaintext)
 	if err != nil {
 		return nil, fmt.Errorf("invalid plaintext encoding: %w", err)
 	}
 
-	// Encrypt with tenant's public key
-	ciphertext, err := crypto.EncryptBase64(plaintext, key.PublicKey)
+	// For v0: Encrypt with platform KEK so workers can decrypt
+	// (In production v1, use envelope encryption with tenant key)
+	ciphertext, err := crypto.EncryptForStorage(plaintext, s.encryptionKEK)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt credential: %w", err)
 	}
 
-	// Store encrypted credential
-	cred, err := s.repo.CreateCredential(ctx, req.TenantID, req.Kind, ciphertext, key.ID)
+	// Store encrypted credential (key_id references the platform KEK version)
+	cred, err := s.repo.CreateCredential(ctx, req.TenantID, req.Kind, ciphertext, "platform-kek")
 	if err != nil {
 		return nil, fmt.Errorf("failed to store credential: %w", err)
 	}

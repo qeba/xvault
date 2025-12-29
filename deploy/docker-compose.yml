@@ -43,14 +43,14 @@ services:
     build:
       context: ..
       dockerfile: deploy/docker/worker/Dockerfile
+    network_mode: host
     environment:
       WORKER_ID: ${WORKER_ID}
       REDIS_URL: ${REDIS_URL}
       WORKER_STORAGE_BASE: ${WORKER_STORAGE_BASE}
-      HUB_BASE_URL: http://hub:8080
+      HUB_BASE_URL: http://localhost:8080
+      WORKER_ENCRYPTION_KEK: ${WORKER_ENCRYPTION_KEK}
     depends_on:
-      redis:
-        condition: service_healthy
       hub:
         condition: service_started
     volumes:
