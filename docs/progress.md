@@ -1,6 +1,6 @@
 # xVault Development Progress
 
-**Last Updated:** 2025-12-28
+**Last Updated:** 2025-12-29
 
 This file tracks the implementation progress of xVault features based on the development sequence in [docs/dev-start.md](dev-start.md) and milestones in [docs/plan.md](plan.md).
 
@@ -195,42 +195,59 @@ This file tracks the implementation progress of xVault features based on the dev
 | Task | Status | Notes |
 |------|--------|-------|
 | 5.9.1 | Create tenant → verify keypair generated | ✅ | Tenant created with Age/x25519 keypair |
-| 5.9.2 | Create source → verify credentials encrypted | ✅ | Credentials encrypted with tenant public key |
+| 5.9.2 | Create source → verify credentials encrypted | ✅ | Credentials encrypted with platform KEK |
 | 5.9.3 | Enqueue backup job → verify appears in Redis | ✅ | Job enqueued to Redis, status=queued |
 | 5.9.4 | Worker claims job → verify status=running | ✅ | Worker claimed job via Hub API |
-| 5.9.5 | Worker completes SSH/SFTP backup | ⏳ | SSH connection fails (expected - example.com not reachable) |
-| 5.9.6 | Verify snapshot stored in worker filesystem | ⏳ | Pending real SSH server for full test |
-| 5.9.7 | Verify snapshot record in Hub DB | ⏳ | Pending real SSH server for full test |
+| 5.9.5 | Worker completes SSH/SFTP backup | ✅ | **Real SSH server test: 10.0.100.85:/home/web/test** |
+| 5.9.6 | Verify snapshot stored in worker filesystem | ✅ | Artifact, manifest, meta.json all present |
+| 5.9.7 | Verify snapshot record in Hub DB | ✅ | Snapshot record with correct locator |
 | 5.9.8 | List snapshots via API | ✅ | API endpoint working |
 
-**Test Results:**
+**✅ END-TO-END TEST COMPLETE**
+
+Successfully backed up files from real SSH server `10.0.100.85:/home/web/test`:
+- **Job ID**: `4e4dd30a-3493-4021-bc56-c5b5acf9aa06`
+- **Snapshot ID**: `17a1cbfe36bbf9e35cea08da736b608f`
+- **Files Pulled**: 2 files (100MB.bin + file = 104,857,600 bytes)
+- **Artifact Size**: 104,886,398 bytes (encrypted + compressed)
+- **Duration**: 593ms
+- **Encryption**: age-x25519
+- **Storage Path**: `/var/lib/xvault/backups/tenants/{tenant_id}/sources/{source_id}/snapshots/{snapshot_id}/`
+
+**Files Created**:
+```
+/var/lib/xvault/backups/tenants/.../snapshots/17a1cbfe36bbf9e35cea08da736b608f/
+├── backup.tar.zst.enc (104,886,398 bytes)
+├── manifest.json (698 bytes)
+└── meta.json (165 bytes)
+```
+
+**V0 Credential Encryption Note**: For v0, credentials are encrypted with the platform KEK (not tenant public key) so workers can decrypt them. This is a temporary approach for the MVP; v1 will use proper envelope encryption where workers can't decrypt credentials directly.
+
+**Worker Dockerfile**: Changed from distroless to debian:bookworm-slim with dedicated `worker` user (UID 1000) to fix storage permission issues.
+
+**Test Commands**:
 ```bash
 # Create tenant
 curl -X POST http://localhost:8080/api/v1/tenants \
-  -H "Content-Type: application/json" \
-  -d '{"name":"test-tenant"}'
-# Response: {"tenant":{"id":"2c5a011e..."},"public_key":"age1tvwaarts8..."}
+  -H "Content-Type: application/json" -d '{"name":"my-tenant"}'
 
-# Create credential
+# Create credential (password base64 encoded)
 curl -X POST http://localhost:8080/api/v1/credentials \
   -H "Content-Type: application/json" \
-  -d '{"tenant_id":"2c5a011e...","kind":"source","plaintext":"dGVzdC1wYXNzd29yZA=="}'
+  -d '{"tenant_id":"...","kind":"source","plaintext":"dGVzdC1wYXNz"}'
 
-# Create source
+# Create SSH source
 curl -X POST http://localhost:8080/api/v1/sources \
   -H "Content-Type: application/json" \
-  -d '{"tenant_id":"2c5a011e...","type":"ssh","name":"test-server","credential_id":"2cc055ba...","config":{"host":"example.com","port":22,"username":"testuser","paths":["/var/www"]}}'
+  -d '{"tenant_id":"...","type":"ssh","name":"server","credential_id":"...","config":{"host":"10.0.100.85","port":22,"username":"web","paths":["/home/web/test"],"use_password":true}}'
 
 # Enqueue job
-curl -X POST "http://localhost:8080/api/v1/jobs?tenant_id=2c5a011e..." \
-  -H "Content-Type: application/json" \
-  -d '{"source_id":"c2ce54a7..."}'
-# Response: {"id":"fba5884a...","status":"queued"}
-
-# Worker logs: "worker worker-1 claimed job fba5884a... (type: backup)"
+curl -X POST "http://localhost:8080/api/v1/jobs?tenant_id=..." \
+  -H "Content-Type: application/json" -d '{"source_id":"..."}'
 ```
 
-**Known Issue:** SSH connection to example.com fails as expected (not a real server). Full integration test requires a real SSH/SFTP server.
+**API Documentation**: See [docs/api-reference.md](api-reference.md) for complete API reference.
 
 ---
 
