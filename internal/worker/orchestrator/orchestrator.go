@@ -138,7 +138,12 @@ func (o *Orchestrator) processNextJob(ctx context.Context) error {
 		return err
 	}
 
-	log.Printf("worker %s completed job %s with status: %s", o.workerID, claimResp.JobID, completeReq.Status)
+	// Log job completion with error details if failed
+	if completeReq.Error != "" {
+		log.Printf("worker %s completed job %s with status: %s, error: %s", o.workerID, claimResp.JobID, completeReq.Status, completeReq.Error)
+	} else {
+		log.Printf("worker %s completed job %s with status: %s", o.workerID, claimResp.JobID, completeReq.Status)
+	}
 	return nil
 }
 

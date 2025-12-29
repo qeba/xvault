@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -215,7 +216,10 @@ func (h *Handlers) HandleClaimJob(c *fiber.Ctx) error {
 
 	resp, err := h.service.ClaimJob(ctx, req)
 	if err != nil {
-		log.Printf("failed to claim job: %v", err)
+		// Don't log "no jobs available" - it's expected when queue is empty
+		if err != sql.ErrNoRows {
+			log.Printf("failed to claim job: %v", err)
+		}
 		return sendError(c, fiber.StatusNotFound, err, "No jobs available")
 	}
 

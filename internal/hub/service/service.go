@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -217,6 +218,10 @@ func (s *Service) ClaimJob(ctx context.Context, req types.JobClaimRequest) (*typ
 	// Claim the next available job
 	job, err := s.repo.ClaimJob(ctx, req.WorkerID, JobLeaseDuration)
 	if err != nil {
+		// Return sql.ErrNoRows directly so handler can identify "no jobs available"
+		if err == sql.ErrNoRows {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to claim job: %w", err)
 	}
 

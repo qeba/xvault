@@ -331,6 +331,10 @@ func (r *Repository) ClaimJob(ctx context.Context, workerID string, leaseDuratio
 		&job.Attempt, &job.Payload, &job.StartedAt, &job.FinishedAt, &job.ErrorCode, &job.ErrorMessage, &job.CreatedAt, &job.UpdatedAt,
 	)
 	if err != nil {
+		// Return sql.ErrNoRows directly so caller can distinguish "no jobs available" from actual errors
+		if err == sql.ErrNoRows {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to claim job: %w", err)
 	}
 

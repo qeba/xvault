@@ -420,6 +420,38 @@ curl -X PUT http://localhost:8080/api/v1/sources/{source_id}/retention \
 
 ---
 
+## Logging & Observability Improvements
+
+**Status**: ✅ **Complete** - Enhanced logging for better debugging and frontend integration
+
+### Changes Implemented
+
+| Improvement | Location | Description |
+|-------------|----------|-------------|
+| Worker error logging | [`internal/worker/orchestrator/orchestrator.go:141-147`](internal/worker/orchestrator/orchestrator.go:141) | Worker now logs full error message when jobs fail |
+| Hub log noise reduction | [`internal/hub/handlers/handlers.go:217-224`](internal/hub/handlers/handlers.go:217) | "No jobs available" is no longer logged as error (expected when queue is empty) |
+| Error propagation | Repository → Service → Handler | `sql.ErrNoRows` is passed through without wrapping to distinguish "no jobs" from actual errors |
+
+### Before vs After
+
+**Worker Logs (Failed Job):**
+- Before: `worker worker-1 completed job abc123 with status: failed`
+- After: `worker worker-1 completed job abc123 with status: failed, error: failed to connect: failed to dial SSH: ssh: handshake failed...`
+
+**Hub Logs (Empty Queue):**
+- Before: `failed to claim job: failed to claim job: failed to claim job: sql: no rows in result set` (every 5 seconds)
+- After: *(Silent - no logging when queue is empty)*
+
+### Database Storage
+
+All job errors are stored in the `jobs.error_message` column for frontend API access:
+
+```sql
+SELECT id, status, error_message FROM jobs WHERE status = 'failed';
+```
+
+---
+
 ## Step 7: Restore Export (Optional v0)
 
 **Goal**: Enable restore downloads in v0 (before S3/Garage)
