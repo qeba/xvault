@@ -947,3 +947,170 @@ func (r *Repository) GetSnapshotByDownloadToken(ctx context.Context, token strin
 
 	return &snap, nil
 }
+
+// ==================== AUTHENTICATION ====================
+
+// User represents a user record
+type User struct {
+	ID           string    `json:"id"`
+	TenantID     string    `json:"tenant_id"`
+	Email        string    `json:"email"`
+	PasswordHash string    `json:"-"` // Never expose in JSON
+	Role         string    `json:"role"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// CreateUser creates a new user
+func (r *Repository) CreateUser(ctx context.Context, tenantID, email, passwordHash, role string) (*User, error) {
+	id := uuid.New().String()
+	now := time.Now()
+
+	query := `INSERT INTO users (id, tenant_id, email, password_hash, role, created_at, updated_at)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7)
+	          RETURNING id, tenant_id, email, password_hash, role, created_at, updated_at`
+
+	var user User
+	err := r.db.QueryRowContext(ctx, query, id, tenantID, email, passwordHash, role, now, now).Scan(
+		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	return &user, nil
+}
+
+// GetUser retrieves a user by ID
+func (r *Repository) GetUser(ctx context.Context, userID string) (*User, error) {
+	query := `SELECT id, tenant_id, email, password_hash, role, created_at, updated_at FROM users WHERE id = $1`
+
+	var user User
+	err := r.db.QueryRowContext(ctx, query, userID).Scan(
+		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	return &user, nil
+}
+
+// GetUserByEmail retrieves a user by email
+func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	query := `SELECT id, tenant_id, email, password_hash, role, created_at, updated_at FROM users WHERE email = $1`
+
+	var user User
+	err := r.db.QueryRowContext(ctx, query, email).Scan(
+		&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user by email: %w", err)
+	}
+
+	return &user, nil
+}
+
+// RefreshToken represents a refresh token record
+type RefreshToken struct {
+	ID             string     `json:"id"`
+	UserID         string     `json:"user_id"`
+	TokenHash      string     `json:"-"`
+	ExpiresAt      time.Time  `json:"expires_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
+	IPAddress      *string    `json:"ip_address,omitempty"`
+	UserAgent      *string    `json:"user_agent,omitempty"`
+}
+
+// CreateRefreshToken creates a new refresh token
+func (r *Repository) CreateRefreshToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time, ipAddress, userAgent string) (*RefreshToken, error) {
+	id := uuid.New().String()
+	now := time.Now()
+
+	query := `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, created_at, ip_address, user_agent)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7)
+	          RETURNING id, user_id, token_hash, expires_at, created_at, revoked_at, ip_address, user_agent`
+
+	var token RefreshToken
+	err := r.db.QueryRowContext(ctx, query, id, userID, tokenHash, expiresAt, now, ipAddress, userAgent).Scan(
+		&token.ID, &token.UserID, &token.TokenHash, &token.ExpiresAt, &token.CreatedAt, &token.RevokedAt, &token.IPAddress, &token.UserAgent,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create refresh token: %w", err)
+	}
+
+	return &token, nil
+}
+
+// GetRefreshTokenByHash retrieves a refresh token by its hash
+func (r *Repository) GetRefreshTokenByHash(ctx context.Context, tokenHash string) (*RefreshToken, error) {
+	query := `SELECT id, user_id, token_hash, expires_at, created_at, revoked_at, ip_address, user_agent
+	          FROM refresh_tokens WHERE token_hash = $1`
+
+	var token RefreshToken
+	err := r.db.QueryRowContext(ctx, query, tokenHash).Scan(
+		&token.ID, &token.UserID, &token.TokenHash, &token.ExpiresAt, &token.CreatedAt, &token.RevokedAt, &token.IPAddress, &token.UserAgent,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get refresh token: %w", err)
+	}
+
+	return &token, nil
+}
+
+// RevokeRefreshToken marks a refresh token as revoked
+func (r *Repository) RevokeRefreshToken(ctx context.Context, tokenID string) error {
+	now := time.Now()
+
+	query := `UPDATE refresh_tokens
+	          SET revoked_at = $1
+	          WHERE id = $2`
+
+	_, err := r.db.ExecContext(ctx, query, now, tokenID)
+	if err != nil {
+		return fmt.Errorf("failed to revoke refresh token: %w", err)
+	}
+
+	return nil
+}
+
+// AddTokenToBlacklist adds a token JTI to the blacklist
+func (r *Repository) AddTokenToBlacklist(ctx context.Context, jti string, expiresAt time.Time) error {
+	query := `INSERT INTO token_blacklist (jti, expires_at, created_at)
+	          VALUES ($1, $2, $3)
+	          ON CONFLICT (jti) DO NOTHING`
+
+	now := time.Now()
+	_, err := r.db.ExecContext(ctx, query, jti, expiresAt, now)
+	if err != nil {
+		return fmt.Errorf("failed to add token to blacklist: %w", err)
+	}
+
+	return nil
+}
+
+// IsTokenBlacklisted checks if a token JTI is blacklisted
+func (r *Repository) IsTokenBlacklisted(ctx context.Context, jti string) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1)`
+
+	var exists bool
+	err := r.db.QueryRowContext(ctx, query, jti).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("failed to check token blacklist: %w", err)
+	}
+
+	return exists, nil
+}
+
+// CleanupExpiredTokens removes expired tokens from blacklist
+func (r *Repository) CleanupExpiredTokens(ctx context.Context) error {
+	query := `DELETE FROM token_blacklist WHERE expires_at < $1`
+
+	_, err := r.db.ExecContext(ctx, query, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to cleanup expired tokens: %w", err)
+	}
+
+	return nil
+}

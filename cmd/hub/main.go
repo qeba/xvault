@@ -13,6 +13,7 @@ import (
 	_ "github.com/lib/pq"
 	"xvault/internal/hub/database"
 	"xvault/internal/hub/handlers"
+	middlewarepkg "xvault/internal/hub/middleware"
 	"xvault/internal/hub/repository"
 	"xvault/internal/hub/service"
 )
@@ -27,6 +28,7 @@ func main() {
 	databaseURL := mustGetenv("DATABASE_URL")
 	redisURL := mustGetenv("REDIS_URL")
 	encryptionKEK := mustGetenv("HUB_ENCRYPTION_KEK")
+	jwtSecret := mustGetenv("HUB_JWT_SECRET")
 
 	// Connect to database
 	db, err := sql.Open("postgres", databaseURL)
@@ -83,6 +85,15 @@ func main() {
 	svc := service.NewService(repo, rdb, encryptionKEK)
 	h := handlers.NewHandlers(svc)
 
+	// Initialize auth service and handlers
+	authConfig := service.DefaultAuthConfig(jwtSecret)
+	authConfig.EncryptionKEK = encryptionKEK
+	authService := service.NewAuthService(repo, authConfig)
+	authHandlers := handlers.NewAuthHandlers(authService)
+
+	// JWT middleware
+	jwtMiddleware := middlewarepkg.JWTMiddleware(authService)
+
 	// Setup Fiber app
 	app := fiber.New(fiber.Config{
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
@@ -108,40 +119,51 @@ func main() {
 	// API v1 routes
 	api := app.Group("/api/v1")
 
+	// Auth routes (public - no JWT required)
+	auth := api.Group("/auth")
+	auth.Post("/register", authHandlers.HandleRegister)
+	auth.Post("/login", authHandlers.HandleLogin)
+	auth.Post("/refresh", authHandlers.HandleRefresh)
+	auth.Post("/logout", jwtMiddleware, authHandlers.HandleLogout)
+	auth.Get("/me", jwtMiddleware, authHandlers.HandleMe)
+
+	// Protected routes (JWT required)
 	// Tenant routes
-	api.Post("/tenants", h.HandleCreateTenant)
-	api.Get("/tenants/:id", h.HandleGetTenant)
+	api.Post("/tenants", jwtMiddleware, h.HandleCreateTenant)
+	api.Get("/tenants/:id", jwtMiddleware, h.HandleGetTenant)
 
 	// Credential routes
-	api.Post("/credentials", h.HandleCreateCredential)
+	api.Post("/credentials", jwtMiddleware, h.HandleCreateCredential)
 
 	// Source routes
-	api.Post("/sources", h.HandleCreateSource)
-	api.Get("/sources", h.HandleListSources)
-	api.Get("/sources/:id", h.HandleGetSource)
+	api.Post("/sources", jwtMiddleware, h.HandleCreateSource)
+	api.Get("/sources", jwtMiddleware, h.HandleListSources)
+	api.Get("/sources/:id", jwtMiddleware, h.HandleGetSource)
 
 	// Schedule routes
-	api.Post("/schedules", h.HandleCreateSchedule)
-	api.Get("/schedules", h.HandleListSchedules)
-	api.Get("/schedules/:id", h.HandleGetSchedule)
-	api.Put("/schedules/:id", h.HandleUpdateSchedule)
+	api.Post("/schedules", jwtMiddleware, h.HandleCreateSchedule)
+	api.Get("/schedules", jwtMiddleware, h.HandleListSchedules)
+	api.Get("/schedules/:id", jwtMiddleware, h.HandleGetSchedule)
+	api.Put("/schedules/:id", jwtMiddleware, h.HandleUpdateSchedule)
 
 	// Job routes
-	api.Post("/jobs", h.HandleEnqueueBackupJob)
+	api.Post("/jobs", jwtMiddleware, h.HandleEnqueueBackupJob)
 
 	// Snapshot routes
-	api.Get("/snapshots", h.HandleListSnapshots)
-	api.Get("/snapshots/:id", h.HandleGetSnapshot)
+	api.Get("/snapshots", jwtMiddleware, h.HandleListSnapshots)
+	api.Get("/snapshots/:id", jwtMiddleware, h.HandleGetSnapshot)
 
 	// Restore routes
-	api.Post("/snapshots/:id/restore", h.HandleEnqueueRestoreJob)
+	api.Post("/snapshots/:id/restore", jwtMiddleware, h.HandleEnqueueRestoreJob)
 
 	// Source retention policy routes
-	api.Get("/sources/:id/retention", h.HandleGetSourceRetentionPolicy)
-	api.Put("/sources/:id/retention", h.HandleUpdateSourceRetentionPolicy)
+	api.Get("/sources/:id/retention", jwtMiddleware, h.HandleGetSourceRetentionPolicy)
+	api.Put("/sources/:id/retention", jwtMiddleware, h.HandleUpdateSourceRetentionPolicy)
 
-	// Admin routes
+	// Admin routes (JWT + admin role required)
 	admin := api.Group("/admin")
+	admin.Use(jwtMiddleware)
+	admin.Use(middlewarepkg.RequireAdmin())
 
 	// Retention management
 	admin.Post("/retention/run", h.HandleRunRetentionForAllSources)

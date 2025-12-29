@@ -18,3 +18,7 @@
 
 # Docker volumes / local state
 .deploy-data/
+
+
+#local test
+test-restore/*

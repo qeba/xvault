@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	middlewarepkg "xvault/internal/hub/middleware"
 	"xvault/internal/hub/service"
 	"xvault/pkg/types"
 )
@@ -130,9 +131,10 @@ func (h *Handlers) HandleListSources(c *fiber.Ctx) error {
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
 
-	tenantID := c.Query("tenant_id")
-	if tenantID == "" {
-		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("tenant_id query parameter is required"), "Validation failed")
+	// Get tenant_id from JWT context
+	tenantID, err := middlewarepkg.GetTenantID(c)
+	if err != nil {
+		return sendError(c, fiber.StatusUnauthorized, err, "Authentication required")
 	}
 
 	sources, err := h.service.ListSources(ctx, tenantID)
@@ -179,14 +181,10 @@ func (h *Handlers) HandleEnqueueBackupJob(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("source_id is required"), "Validation failed")
 	}
 
-	// For v0, we'll use a default tenant_id from header or query
-	// In production, this would come from JWT auth
-	tenantID := c.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = c.Query("tenant_id")
-	}
-	if tenantID == "" {
-		return sendError(c, fiber.StatusUnauthorized, fmt.Errorf("tenant_id is required"), "Authentication required")
+	// Get tenant_id from JWT context
+	tenantID, err := middlewarepkg.GetTenantID(c)
+	if err != nil {
+		return sendError(c, fiber.StatusUnauthorized, err, "Authentication required")
 	}
 
 	job, err := h.service.EnqueueBackupJob(ctx, tenantID, req)
@@ -377,11 +375,15 @@ func (h *Handlers) HandleListSnapshots(c *fiber.Ctx) error {
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
 
-	tenantID := c.Query("tenant_id")
-	sourceID := c.Query("source_id")
+	// Get tenant_id from JWT context
+	tenantID, err := middlewarepkg.GetTenantID(c)
+	if err != nil {
+		return sendError(c, fiber.StatusUnauthorized, err, "Authentication required")
+	}
 
-	if tenantID == "" || sourceID == "" {
-		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("tenant_id and source_id are required"), "Validation failed")
+	sourceID := c.Query("source_id")
+	if sourceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("source_id is required"), "Validation failed")
 	}
 
 	limit := 50 // Default limit
@@ -612,9 +614,10 @@ func (h *Handlers) HandleListSchedules(c *fiber.Ctx) error {
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
 
-	tenantID := c.Query("tenant_id")
-	if tenantID == "" {
-		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("tenant_id query parameter is required"), "Validation failed")
+	// Get tenant_id from JWT context
+	tenantID, err := middlewarepkg.GetTenantID(c)
+	if err != nil {
+		return sendError(c, fiber.StatusUnauthorized, err, "Authentication required")
 	}
 
 	schedules, err := h.service.ListSchedules(ctx, tenantID)
@@ -639,14 +642,10 @@ func (h *Handlers) HandleEnqueueRestoreJob(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("snapshot_id is required"), "Validation failed")
 	}
 
-	// For v0, we'll use a default tenant_id from header or query
-	// In production, this would come from JWT auth
-	tenantID := c.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = c.Query("tenant_id")
-	}
-	if tenantID == "" {
-		return sendError(c, fiber.StatusUnauthorized, fmt.Errorf("tenant_id is required"), "Authentication required")
+	// Get tenant_id from JWT context
+	tenantID, err := middlewarepkg.GetTenantID(c)
+	if err != nil {
+		return sendError(c, fiber.StatusUnauthorized, err, "Authentication required")
 	}
 
 	job, err := h.service.EnqueueRestoreJob(ctx, tenantID, snapshotID)
