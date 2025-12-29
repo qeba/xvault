@@ -22,7 +22,7 @@ func main() {
 	// Create Hub client
 	hubClient := client.NewHubClient(hubBaseURL)
 
-	// Create orchestrator
+	// Create orchestrator (without download server - restore is handled by separate service)
 	orch := orchestrator.NewOrchestrator(workerID, hubClient, storageBase, encryptionKEK)
 
 	// Setup context with cancellation
