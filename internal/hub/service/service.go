@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
+	"path/filepath"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -267,6 +269,23 @@ func (s *Service) GetTenantPublicKeyForWorker(ctx context.Context, tenantID stri
 	}
 
 	return key, nil
+}
+
+// GetTenantPrivateKeyForWorker retrieves and decrypts a tenant's private key for restore operations
+// This is used ONLY by workers for restore jobs (decrypting backup artifacts)
+func (s *Service) GetTenantPrivateKeyForWorker(ctx context.Context, tenantID string) (string, error) {
+	key, err := s.repo.GetActiveTenantKey(ctx, tenantID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get tenant key: %w", err)
+	}
+
+	// Decrypt the private key using the platform KEK
+	privateKeyBytes, err := crypto.DecryptFromStorage(key.EncryptedPrivateKey, s.encryptionKEK)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt private key: %w", err)
+	}
+
+	return string(privateKeyBytes), nil
 }
 
 // CompleteJob handles a worker's job completion report
@@ -807,4 +826,298 @@ func (s *Service) UpdateSourceRetentionPolicy(ctx context.Context, sourceID stri
 	}
 
 	return updated, nil
+}
+
+// ========== Restore Service Methods ==========
+
+// RestoreJobClaimRequest is the request to claim a restore job
+type RestoreJobClaimRequest struct {
+	ServiceID string `json:"service_id"`
+}
+
+// RestoreJobClaimResponse is the response when claiming a restore job
+type RestoreJobClaimResponse struct {
+	JobID      string `json:"job_id"`
+	TenantID   string `json:"tenant_id"`
+	SourceID   string `json:"source_id"`
+	SnapshotID string `json:"snapshot_id"`
+	LocalPath  string `json:"local_path"` // Actual path to snapshot on worker storage
+}
+
+// RestoreJobCompleteRequest is the request to complete a restore job
+type RestoreJobCompleteRequest struct {
+	ServiceID     string `json:"service_id"`
+	Status        string `json:"status"`
+	Error         string `json:"error,omitempty"`
+	DownloadURL   string `json:"download_url,omitempty"`
+	DownloadToken string `json:"download_token,omitempty"`
+	SizeBytes     int64  `json:"size_bytes,omitempty"`
+	ExpiresAt     string `json:"expires_at,omitempty"`
+	DurationMs    int64  `json:"duration_ms,omitempty"`
+}
+
+// EnqueueRestoreJob creates and enqueues a restore job
+func (s *Service) EnqueueRestoreJob(ctx context.Context, tenantID, snapshotID string) (*repository.Job, error) {
+	// Get snapshot to verify it exists and get source info
+	snapshot, err := s.repo.GetSnapshot(ctx, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot not found: %w", err)
+	}
+
+	// Verify snapshot belongs to tenant
+	if snapshot.TenantID != tenantID {
+		return nil, fmt.Errorf("snapshot does not belong to tenant")
+	}
+
+	// Check if snapshot is completed
+	if snapshot.Status != "completed" {
+		return nil, fmt.Errorf("snapshot is not completed (status: %s)", snapshot.Status)
+	}
+
+	// Create restore job payload
+	payload := types.JobPayload{
+		SourceID:          snapshot.SourceID,
+		RestoreSnapshotID: &snapshotID,
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Create job record (sourceID as string pointer for restore jobs)
+	sourceIDPtr := &snapshot.SourceID
+	job, err := s.repo.CreateJob(ctx, tenantID, types.JobTypeRestore, sourceIDPtr, payloadJSON, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create job: %w", err)
+	}
+
+	// Enqueue to Redis
+	jobData := map[string]interface{}{
+		"job_id":      job.ID,
+		"tenant_id":   tenantID,
+		"source_id":   snapshot.SourceID,
+		"snapshot_id": snapshotID,
+		"type":        "restore",
+	}
+
+	if err := s.redis.LPush(ctx, JobQueueKey, jobData).Err(); err != nil {
+		return nil, fmt.Errorf("failed to enqueue job: %w", err)
+	}
+
+	log.Printf("enqueued restore job %s for snapshot %s", job.ID, snapshotID)
+	return job, nil
+}
+
+// ClaimRestoreJob claims the next available restore job for a restore service
+func (s *Service) ClaimRestoreJob(ctx context.Context, req RestoreJobClaimRequest) (*RestoreJobClaimResponse, error) {
+	// Find next queued restore job
+	job, err := s.repo.ClaimRestoreJob(ctx, req.ServiceID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse payload to get snapshot ID
+	var payload types.JobPayload
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse job payload: %w", err)
+	}
+
+	if payload.RestoreSnapshotID == nil {
+		return nil, fmt.Errorf("restore_snapshot_id not found in payload")
+	}
+
+	// Handle source_id pointer
+	var sourceID string
+	if job.SourceID != nil {
+		sourceID = *job.SourceID
+	}
+
+	// Fetch snapshot record to get the actual local_path
+	snapshot, err := s.repo.GetSnapshot(ctx, *payload.RestoreSnapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get snapshot record: %w", err)
+	}
+
+	// Build local_path from snapshot record
+	localPath := ""
+	if snapshot.LocalPath != nil {
+		localPath = *snapshot.LocalPath
+	} else {
+		// Fallback: construct path from storage backend and locator
+		localPath = filepath.Join("/var/lib/xvault/backups", "tenants", job.TenantID, "sources", sourceID, "snapshots", *payload.RestoreSnapshotID)
+	}
+
+	return &RestoreJobClaimResponse{
+		JobID:      job.ID,
+		TenantID:   job.TenantID,
+		SourceID:   sourceID,
+		SnapshotID: *payload.RestoreSnapshotID,
+		LocalPath:  localPath,
+	}, nil
+}
+
+// CompleteRestoreJob handles restore service job completion
+func (s *Service) CompleteRestoreJob(ctx context.Context, jobID string, req RestoreJobCompleteRequest) error {
+	// Update job status
+	var finalStatus types.JobStatus
+	switch req.Status {
+	case "completed":
+		finalStatus = types.JobStatusCompleted
+	case "failed":
+		finalStatus = types.JobStatusFailed
+	default:
+		return fmt.Errorf("invalid job status: %s", req.Status)
+	}
+
+	var errorMsg *string
+	if req.Error != "" {
+		errorMsg = &req.Error
+	}
+
+	if err := s.repo.CompleteJob(ctx, jobID, finalStatus, errorMsg); err != nil {
+		return fmt.Errorf("failed to update job: %w", err)
+	}
+
+	// If successful, store download metadata in database
+	if req.Status == "completed" && req.DownloadToken != "" {
+		// Get job details to find snapshot ID
+		job, err := s.repo.GetJob(ctx, jobID)
+		if err != nil {
+			return fmt.Errorf("failed to get job details: %w", err)
+		}
+
+		// Parse payload to get snapshot ID
+		var payload types.JobPayload
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return fmt.Errorf("failed to parse job payload: %w", err)
+		}
+
+		if payload.RestoreSnapshotID != nil {
+			// Parse expires_at
+			expiresAt, err := time.Parse(time.RFC3339, req.ExpiresAt)
+			if err != nil {
+				log.Printf("failed to parse expires_at: %v", err)
+				expiresAt = time.Now().Add(1 * time.Hour) // Default to 1 hour
+			}
+
+			// Update snapshot with download info
+			if err := s.UpdateSnapshotDownloadInfo(ctx, *payload.RestoreSnapshotID, req.DownloadToken, req.DownloadURL, expiresAt); err != nil {
+				log.Printf("failed to update snapshot download info: %v", err)
+				// Don't fail the job completion if we can't store download metadata
+			}
+		}
+
+		log.Printf("restore job %s completed: download_url=%s, expires_at=%s", jobID, req.DownloadURL, req.ExpiresAt)
+	}
+
+	return nil
+}
+
+// RegisterServiceRequest is the request to register a restore service
+type RegisterServiceRequest struct {
+	ServiceID    string         `json:"service_id"`
+	Type         string         `json:"type"`
+	Name         string         `json:"name"`
+	Capabilities map[string]any `json:"capabilities"`
+}
+
+// RestoreService represents a restore service registration
+type RestoreService struct {
+	ID           string         `json:"id"`
+	ServiceID    string         `json:"service_id"`
+	Type         string         `json:"type"`
+	Name         string         `json:"name"`
+	Capabilities map[string]any `json:"capabilities"`
+	Status       string         `json:"status"`
+	LastSeenAt   *time.Time     `json:"last_seen_at"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+}
+
+// RegisterRestoreService registers a restore service with the hub
+func (s *Service) RegisterRestoreService(ctx context.Context, req RegisterServiceRequest) (*RestoreService, error) {
+	// For v0, just return a simple response (stored in memory, not DB)
+	// In production, this would be stored in a restore_services table
+	now := time.Now()
+	return &RestoreService{
+		ID:           req.ServiceID,
+		ServiceID:    req.ServiceID,
+		Type:         req.Type,
+		Name:         req.Name,
+		Capabilities: req.Capabilities,
+		Status:       "online",
+		LastSeenAt:   &now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}, nil
+}
+
+// ServiceHeartbeatRequest is the request for service heartbeat
+type ServiceHeartbeatRequest struct {
+	ServiceID string `json:"service_id"`
+	Status    string `json:"status"`
+}
+
+// RestoreServiceHeartbeat updates a restore service's heartbeat
+func (s *Service) RestoreServiceHeartbeat(ctx context.Context, req ServiceHeartbeatRequest) error {
+	// For v0, just log (stored in memory, not DB)
+	// In production, this would update the restore_services table
+	log.Printf("restore service %s heartbeat: status=%s", req.ServiceID, req.Status)
+	return nil
+}
+
+// ========== System Settings Management ==========
+
+// GetSetting retrieves a system setting by key
+func (s *Service) GetSetting(ctx context.Context, key string) (*repository.SystemSetting, error) {
+	setting, err := s.repo.GetSetting(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get setting: %w", err)
+	}
+	return setting, nil
+}
+
+// ListSettings retrieves all system settings
+func (s *Service) ListSettings(ctx context.Context) ([]*repository.SystemSetting, error) {
+	settings, err := s.repo.ListSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list settings: %w", err)
+	}
+	return settings, nil
+}
+
+// UpdateSettingRequest is the request to update a system setting
+type UpdateSettingRequest struct {
+	Value       string `json:"value"`
+	Description string `json:"description,omitempty"`
+}
+
+// UpdateSetting updates a system setting
+func (s *Service) UpdateSetting(ctx context.Context, key string, req UpdateSettingRequest) (*repository.SystemSetting, error) {
+	setting, err := s.repo.UpsertSetting(ctx, key, req.Value, req.Description)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update setting: %w", err)
+	}
+	return setting, nil
+}
+
+// GetDownloadExpirationHours retrieves the download expiration setting in hours
+func (s *Service) GetDownloadExpirationHours(ctx context.Context) (int, error) {
+	setting, err := s.repo.GetSetting(ctx, "download_expiration_hours")
+	if err != nil {
+		// Return default if setting not found
+		return 1, nil
+	}
+
+	var hours int
+	if _, err := fmt.Sscanf(setting.Value, "%d", &hours); err != nil {
+		return 1, nil // Default to 1 hour if parsing fails
+	}
+
+	return hours, nil
+}
+
+// UpdateSnapshotDownloadInfo updates download tracking info for a snapshot
+func (s *Service) UpdateSnapshotDownloadInfo(ctx context.Context, snapshotID, downloadToken, downloadURL string, expiresAt time.Time) error {
+	return s.repo.UpdateSnapshotDownloadInfo(ctx, snapshotID, downloadToken, downloadURL, expiresAt)
 }

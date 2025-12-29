@@ -317,7 +317,7 @@ func (r *Repository) ClaimJob(ctx context.Context, workerID string, leaseDuratio
 	              updated_at = $3
 	          WHERE id = (
 	              SELECT id FROM jobs
-	              WHERE status = 'queued'
+	              WHERE status = 'queued' AND type != 'restore'
 	              ORDER BY priority DESC, created_at ASC
 	              LIMIT 1
 	              FOR UPDATE SKIP LOCKED
@@ -336,6 +336,44 @@ func (r *Repository) ClaimJob(ctx context.Context, workerID string, leaseDuratio
 			return nil, err
 		}
 		return nil, fmt.Errorf("failed to claim job: %w", err)
+	}
+
+	return &job, nil
+}
+
+// ClaimRestoreJob claims the next queued restore job for a restore service
+func (r *Repository) ClaimRestoreJob(ctx context.Context, serviceID string) (*Job, error) {
+	now := time.Now()
+	leaseExpires := now.Add(30 * time.Minute)
+
+	query := `UPDATE jobs
+	          SET status = 'running',
+	              target_worker_id = $1,
+	              lease_expires_at = $2,
+	              started_at = $3,
+	              attempt = attempt + 1,
+	              updated_at = $3
+	          WHERE id = (
+	              SELECT id FROM jobs
+	              WHERE status = 'queued' AND type = 'restore'
+	              ORDER BY priority DESC, created_at ASC
+	              LIMIT 1
+	              FOR UPDATE SKIP LOCKED
+	          )
+	          RETURNING id, tenant_id, source_id, type, status, priority, target_worker_id, lease_expires_at,
+	                    attempt, payload, started_at, finished_at, error_code, error_message, created_at, updated_at`
+
+	var job Job
+	err := r.db.QueryRowContext(ctx, query, serviceID, leaseExpires, now).Scan(
+		&job.ID, &job.TenantID, &job.SourceID, &job.Type, &job.Status, &job.Priority, &job.TargetWorkerID, &job.LeaseExpiresAt,
+		&job.Attempt, &job.Payload, &job.StartedAt, &job.FinishedAt, &job.ErrorCode, &job.ErrorMessage, &job.CreatedAt, &job.UpdatedAt,
+	)
+	if err != nil {
+		// Return sql.ErrNoRows directly so caller can distinguish "no jobs available" from actual errors
+		if err == sql.ErrNoRows {
+			return nil, err
+		}
+		return nil, fmt.Errorf("failed to claim restore job: %w", err)
 	}
 
 	return &job, nil
@@ -399,6 +437,9 @@ type Snapshot struct {
 	Bucket              *string         `json:"bucket,omitempty"`
 	ObjectKey           *string         `json:"object_key,omitempty"`
 	ETag                *string         `json:"etag,omitempty"`
+	DownloadToken       *string         `json:"download_token,omitempty"`
+	DownloadExpiresAt   *time.Time      `json:"download_expires_at,omitempty"`
+	DownloadURL         *string         `json:"download_url,omitempty"`
 	CreatedAt           time.Time       `json:"created_at"`
 	UpdatedAt           time.Time       `json:"updated_at"`
 }
@@ -415,7 +456,9 @@ func (r *Repository) CreateSnapshot(ctx context.Context, tenantID, sourceID, job
 	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'age-x25519', $11, $12, $13, $14, $15, $16)
 	          RETURNING id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
 	                    manifest_json, encryption_algorithm, encryption_key_id, encryption_recipient,
-	                    storage_backend, worker_id, local_path, bucket, object_key, etag, created_at, updated_at`
+	                    storage_backend, worker_id, local_path, bucket, object_key, etag,
+	                    download_token, download_expires_at, download_url,
+	                    created_at, updated_at`
 
 	var snapshot Snapshot
 	err := r.db.QueryRowContext(ctx, query,
@@ -426,7 +469,9 @@ func (r *Repository) CreateSnapshot(ctx context.Context, tenantID, sourceID, job
 		&snapshot.ID, &snapshot.TenantID, &snapshot.SourceID, &snapshot.JobID, &snapshot.Status, &snapshot.SizeBytes,
 		&snapshot.StartedAt, &snapshot.FinishedAt, &snapshot.DurationMs, &snapshot.ManifestJSON, &snapshot.EncryptionAlgorithm,
 		&snapshot.EncryptionKeyID, &snapshot.EncryptionRecipient, &snapshot.StorageBackend, &snapshot.WorkerID,
-		&snapshot.LocalPath, &snapshot.Bucket, &snapshot.ObjectKey, &snapshot.ETag, &snapshot.CreatedAt, &snapshot.UpdatedAt,
+		&snapshot.LocalPath, &snapshot.Bucket, &snapshot.ObjectKey, &snapshot.ETag,
+		&snapshot.DownloadToken, &snapshot.DownloadExpiresAt, &snapshot.DownloadURL,
+		&snapshot.CreatedAt, &snapshot.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create snapshot: %w", err)
@@ -439,7 +484,9 @@ func (r *Repository) CreateSnapshot(ctx context.Context, tenantID, sourceID, job
 func (r *Repository) ListSnapshots(ctx context.Context, tenantID, sourceID string, limit int) ([]*Snapshot, error) {
 	query := `SELECT id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
 	          manifest_json, encryption_algorithm, encryption_key_id, encryption_recipient,
-	          storage_backend, worker_id, local_path, bucket, object_key, etag, created_at, updated_at
+	          storage_backend, worker_id, local_path, bucket, object_key, etag,
+	          download_token, download_expires_at, download_url,
+	          created_at, updated_at
 	          FROM snapshots
 	          WHERE tenant_id = $1 AND source_id = $2
 	          ORDER BY created_at DESC
@@ -458,7 +505,9 @@ func (r *Repository) ListSnapshots(ctx context.Context, tenantID, sourceID strin
 			&snap.ID, &snap.TenantID, &snap.SourceID, &snap.JobID, &snap.Status, &snap.SizeBytes,
 			&snap.StartedAt, &snap.FinishedAt, &snap.DurationMs, &snap.ManifestJSON, &snap.EncryptionAlgorithm,
 			&snap.EncryptionKeyID, &snap.EncryptionRecipient, &snap.StorageBackend, &snap.WorkerID,
-			&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag, &snap.CreatedAt, &snap.UpdatedAt,
+			&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag,
+			&snap.DownloadToken, &snap.DownloadExpiresAt, &snap.DownloadURL,
+			&snap.CreatedAt, &snap.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan snapshot: %w", err)
@@ -473,7 +522,9 @@ func (r *Repository) ListSnapshots(ctx context.Context, tenantID, sourceID strin
 func (r *Repository) GetSnapshot(ctx context.Context, id string) (*Snapshot, error) {
 	query := `SELECT id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
 	          manifest_json, encryption_algorithm, encryption_key_id, encryption_recipient,
-	          storage_backend, worker_id, local_path, bucket, object_key, etag, created_at, updated_at
+	          storage_backend, worker_id, local_path, bucket, object_key, etag,
+	          download_token, download_expires_at, download_url,
+	          created_at, updated_at
 	          FROM snapshots WHERE id = $1`
 
 	var snap Snapshot
@@ -481,7 +532,9 @@ func (r *Repository) GetSnapshot(ctx context.Context, id string) (*Snapshot, err
 		&snap.ID, &snap.TenantID, &snap.SourceID, &snap.JobID, &snap.Status, &snap.SizeBytes,
 		&snap.StartedAt, &snap.FinishedAt, &snap.DurationMs, &snap.ManifestJSON, &snap.EncryptionAlgorithm,
 		&snap.EncryptionKeyID, &snap.EncryptionRecipient, &snap.StorageBackend, &snap.WorkerID,
-		&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag, &snap.CreatedAt, &snap.UpdatedAt,
+		&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag,
+		&snap.DownloadToken, &snap.DownloadExpiresAt, &snap.DownloadURL,
+		&snap.CreatedAt, &snap.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get snapshot: %w", err)
@@ -625,7 +678,9 @@ func (r *Repository) ListAllSchedules(ctx context.Context) ([]*Schedule, error) 
 func (r *Repository) ListSnapshotsForRetention(ctx context.Context, tenantID, sourceID string) ([]*Snapshot, error) {
 	query := `SELECT id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
 	          manifest_json, encryption_algorithm, encryption_key_id, encryption_recipient,
-	          storage_backend, worker_id, local_path, bucket, object_key, etag, created_at, updated_at
+	          storage_backend, worker_id, local_path, bucket, object_key, etag,
+	          download_token, download_expires_at, download_url,
+	          created_at, updated_at
 	          FROM snapshots
 	          WHERE tenant_id = $1 AND source_id = $2 AND status = 'completed'
 	          ORDER BY created_at ASC`
@@ -643,7 +698,9 @@ func (r *Repository) ListSnapshotsForRetention(ctx context.Context, tenantID, so
 			&snap.ID, &snap.TenantID, &snap.SourceID, &snap.JobID, &snap.Status, &snap.SizeBytes,
 			&snap.StartedAt, &snap.FinishedAt, &snap.DurationMs, &snap.ManifestJSON, &snap.EncryptionAlgorithm,
 			&snap.EncryptionKeyID, &snap.EncryptionRecipient, &snap.StorageBackend, &snap.WorkerID,
-			&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag, &snap.CreatedAt, &snap.UpdatedAt,
+			&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag,
+			&snap.DownloadToken, &snap.DownloadExpiresAt, &snap.DownloadURL,
+			&snap.CreatedAt, &snap.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan snapshot: %w", err)
@@ -776,4 +833,117 @@ func (r *Repository) GetSchedule(ctx context.Context, scheduleID string) (*Sched
 	}
 
 	return &schedule, nil
+}
+
+// SystemSetting represents a system setting record
+type SystemSetting struct {
+	Key         string     `json:"key"`
+	Value       string     `json:"value"`
+	Description *string    `json:"description,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// GetSetting retrieves a system setting by key
+func (r *Repository) GetSetting(ctx context.Context, key string) (*SystemSetting, error) {
+	query := `SELECT key, value, description, created_at, updated_at FROM system_settings WHERE key = $1`
+
+	var setting SystemSetting
+	err := r.db.QueryRowContext(ctx, query, key).Scan(
+		&setting.Key, &setting.Value, &setting.Description, &setting.CreatedAt, &setting.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get system setting: %w", err)
+	}
+
+	return &setting, nil
+}
+
+// ListSettings retrieves all system settings
+func (r *Repository) ListSettings(ctx context.Context) ([]*SystemSetting, error) {
+	query := `SELECT key, value, description, created_at, updated_at FROM system_settings ORDER BY key`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list system settings: %w", err)
+	}
+	defer rows.Close()
+
+	var settings []*SystemSetting
+	for rows.Next() {
+		var setting SystemSetting
+		err := rows.Scan(
+			&setting.Key, &setting.Value, &setting.Description, &setting.CreatedAt, &setting.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan system setting: %w", err)
+		}
+		settings = append(settings, &setting)
+	}
+
+	return settings, nil
+}
+
+// UpsertSetting creates or updates a system setting
+func (r *Repository) UpsertSetting(ctx context.Context, key, value, description string) (*SystemSetting, error) {
+	now := time.Now()
+
+	// Try to insert first, then update if exists
+	query := `INSERT INTO system_settings (key, value, description, created_at, updated_at)
+	          VALUES ($1, $2, $3, $4, $5)
+	          ON CONFLICT (key) DO UPDATE
+	          SET value = EXCLUDED.value,
+	              description = EXCLUDED.description,
+	              updated_at = EXCLUDED.updated_at
+	          RETURNING key, value, description, created_at, updated_at`
+
+	var setting SystemSetting
+	err := r.db.QueryRowContext(ctx, query, key, value, description, now, now).Scan(
+		&setting.Key, &setting.Value, &setting.Description, &setting.CreatedAt, &setting.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to upsert system setting: %w", err)
+	}
+
+	return &setting, nil
+}
+
+// UpdateSnapshotDownloadInfo updates the download tracking information for a snapshot
+func (r *Repository) UpdateSnapshotDownloadInfo(ctx context.Context, snapshotID, downloadToken, downloadURL string, expiresAt time.Time) error {
+	query := `UPDATE snapshots
+	          SET download_token = $2,
+	              download_expires_at = $3,
+	              download_url = $4,
+	              updated_at = $5
+	          WHERE id = $1`
+
+	_, err := r.db.ExecContext(ctx, query, snapshotID, downloadToken, expiresAt, downloadURL, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to update snapshot download info: %w", err)
+	}
+
+	return nil
+}
+
+// GetSnapshotByDownloadToken retrieves a snapshot by its download token
+func (r *Repository) GetSnapshotByDownloadToken(ctx context.Context, token string) (*Snapshot, error) {
+	query := `SELECT id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
+	          manifest_json, encryption_algorithm, encryption_key_id, encryption_recipient,
+	          storage_backend, worker_id, local_path, bucket, object_key, etag, created_at, updated_at,
+	          download_token, download_expires_at, download_url
+	          FROM snapshots WHERE download_token = $1`
+
+	var snap Snapshot
+	err := r.db.QueryRowContext(ctx, query, token).Scan(
+		&snap.ID, &snap.TenantID, &snap.SourceID, &snap.JobID, &snap.Status, &snap.SizeBytes,
+		&snap.StartedAt, &snap.FinishedAt, &snap.DurationMs, &snap.ManifestJSON, &snap.EncryptionAlgorithm,
+		&snap.EncryptionKeyID, &snap.EncryptionRecipient, &snap.StorageBackend, &snap.WorkerID,
+		&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag, &snap.CreatedAt, &snap.UpdatedAt,
+		&snap.DownloadToken, &snap.DownloadExpiresAt, &snap.DownloadURL,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get snapshot by download token: %w", err)
+	}
+
+	return &snap, nil
 }

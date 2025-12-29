@@ -133,6 +133,9 @@ func main() {
 	api.Get("/snapshots", h.HandleListSnapshots)
 	api.Get("/snapshots/:id", h.HandleGetSnapshot)
 
+	// Restore routes
+	api.Post("/snapshots/:id/restore", h.HandleEnqueueRestoreJob)
+
 	// Source retention policy routes
 	api.Get("/sources/:id/retention", h.HandleGetSourceRetentionPolicy)
 	api.Put("/sources/:id/retention", h.HandleUpdateSourceRetentionPolicy)
@@ -143,6 +146,11 @@ func main() {
 	// Retention management
 	admin.Post("/retention/run", h.HandleRunRetentionForAllSources)
 	admin.Post("/retention/run/:id", h.HandleRunRetentionForSource)
+
+	// Settings management
+	admin.Get("/settings", h.HandleListSettings)
+	admin.Get("/settings/:key", h.HandleGetSetting)
+	admin.Put("/settings/:key", h.HandleUpdateSetting)
 
 	// Internal/Worker routes
 	internal := app.Group("/internal")
@@ -156,10 +164,20 @@ func main() {
 
 	// Tenant keys
 	internal.Get("/tenants/:id/public-key", h.HandleGetTenantPublicKey)
+	internal.Get("/tenants/:id/private-key", h.HandleGetTenantPrivateKey)
+
+	// Restore service management
+	internal.Post("/restore-jobs/claim", h.HandleClaimRestoreJob)
+	internal.Post("/restore-jobs/:id/complete", h.HandleCompleteRestoreJob)
+	internal.Post("/services/register", h.HandleRegisterRestoreService)
+	internal.Post("/services/heartbeat", h.HandleRestoreServiceHeartbeat)
 
 	// Worker management
 	internal.Post("/workers/register", h.HandleRegisterWorker)
 	internal.Post("/workers/heartbeat", h.HandleWorkerHeartbeat)
+
+	// Internal settings (for restore service)
+	internal.Get("/settings/download-expiration", h.HandleGetDownloadExpiration)
 
 	// Start retention scheduler in background
 	retentionIntervalHours := getenv("RETENTION_EVALUATION_INTERVAL_HOURS", "6")

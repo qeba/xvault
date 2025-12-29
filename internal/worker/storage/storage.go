@@ -26,6 +26,16 @@ func (s *Storage) SnapshotPath(tenantID, sourceID, snapshotID string) string {
 	return filepath.Join(s.basePath, "tenants", tenantID, "sources", sourceID, "snapshots", snapshotID)
 }
 
+// GetSnapshotPath is an alias for SnapshotPath for clarity
+func (s *Storage) GetSnapshotPath(tenantID, sourceID, snapshotID string) (string, error) {
+	path := s.SnapshotPath(tenantID, sourceID, snapshotID)
+	// Verify the path exists
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("snapshot not found: %w", err)
+	}
+	return path, nil
+}
+
 // WriteSnapshot writes the encrypted backup artifact and metadata to disk
 func (s *Storage) WriteSnapshot(tenantID, sourceID, snapshotID string, artifact []byte, manifest []byte) (string, int64, error) {
 	snapshotPath := s.SnapshotPath(tenantID, sourceID, snapshotID)

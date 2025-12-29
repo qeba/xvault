@@ -56,6 +56,25 @@ services:
     volumes:
       - xvault_worker_backups:${WORKER_STORAGE_BASE}
 
+  restore:
+    build:
+      context: ..
+      dockerfile: deploy/docker/restore/Dockerfile
+    network_mode: host
+    environment:
+      RESTORE_SERVICE_ID: ${RESTORE_SERVICE_ID}
+      HUB_BASE_URL: http://localhost:8080
+      WORKER_STORAGE_BASE: ${WORKER_STORAGE_BASE}
+      RESTORE_DOWNLOAD_ADDR: ${RESTORE_DOWNLOAD_ADDR}
+      RESTORE_DOWNLOAD_BASE_URL: ${RESTORE_DOWNLOAD_BASE_URL}
+    depends_on:
+      hub:
+        condition: service_started
+    volumes:
+      - xvault_worker_backups:${WORKER_STORAGE_BASE}:ro
+      - xvault_restore_downloads:/var/lib/xvault/downloads
+
 volumes:
   xvault_postgres:
   xvault_worker_backups:
+  xvault_restore_downloads:

@@ -452,20 +452,139 @@ SELECT id, status, error_message FROM jobs WHERE status = 'failed';
 
 ---
 
-## Step 7: Restore Export (Optional v0)
+## Step 7: Restore Service & Download Management
 
-**Goal**: Enable restore downloads in v0 (before S3/Garage)
+**Status**: ✅ **Complete** - Full restore pipeline with configurable download expiration
+
+**Goal**: Enable restore downloads in v0 with admin-configurable settings
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 7.1 | `POST /api/v1/jobs/:id/restore` endpoint | ⏳ | |
-| 7.2 | Hub enqueues restore job targeted to `snapshot.worker_id` | ⏳ | |
-| 7.3 | Worker: handle `restore` job type | ⏳ | |
-| 7.4 | Worker reads encrypted backup from local storage | ⏳ | |
-| 7.5 | Worker decrypts and extracts to temp dir | ⏳ | |
-| 7.6 | Worker creates zip/tar archive | ⏳ | |
-| 7.7 | Worker reports restore complete | ⏳ | |
-| 7.8 | Provide download mechanism | ⏳ | May need additional infra for v0 (or manual retrieval) |
+| 7.1 | `POST /api/v1/snapshots/:id/restore` endpoint | ✅ | [`internal/hub/handlers/handlers.go:421`](internal/hub/handlers/handlers.go) |
+| 7.2 | Hub enqueues restore job targeted to `snapshot.worker_id` | ✅ | Restores routed to owning worker |
+| 7.3 | Restore service: claim and process restore jobs | ✅ | Separate `cmd/restore` service |
+| 7.4 | Restore service reads encrypted backup from shared storage | ✅ | Read-only mount of worker volume |
+| 7.5 | Restore service decrypts and extracts to temp dir | ✅ | Age decryption with tenant private key |
+| 7.6 | Restore service creates ZIP archive for download | ✅ | `archive/zip` for portability |
+| 7.7 | Restore service reports completion with download metadata | ✅ | Token, URL, expires_at saved to database |
+| 7.8 | Token-based download mechanism with expiration | ✅ | Configurable via system settings |
+
+### Implementation Details
+
+**Restore Service Architecture** ([`cmd/restore/main.go`](cmd/restore/main.go)):
+- Separate service from worker (can scale independently)
+- Shares worker storage via read-only Docker volume
+- Fetches download expiration from Hub on startup
+- Generates secure tokens for download access
+- Cleanup goroutine removes expired tokens every 5 minutes
+
+**Download Server** ([`internal/restore/download/server.go`](internal/restore/download/server.go)):
+- Fiber-based HTTP server on `:8082`
+- Token-based download: `GET /download/:token`
+- Configurable expiration time (in hours)
+- Token info includes: snapshot_id, file_path, created_at, expires_at
+
+**API Endpoints**:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/snapshots/:id/restore` | POST | Enqueue restore job |
+| `/api/v1/admin/settings` | GET | List all system settings |
+| `/api/v1/admin/settings/:key` | GET | Get specific setting |
+| `/api/v1/admin/settings/:key` | PUT | Update setting |
+| `/internal/settings/download-expiration` | GET | Internal: get download expiration hours |
+| `/internal/restore-jobs/claim` | POST | Restore service claims job |
+| `/internal/restore-jobs/:id/complete` | POST | Restore service reports completion |
+| `/download/:token` | GET | Download restored backup (restore service) |
+
+### Database Changes
+
+**Migration 00002** ([`internal/hub/database/migrations/00002_add_download_tracking.sql`](internal/hub/database/migrations/00002_add_download_tracking.sql)):
+- Added `download_token`, `download_expires_at`, `download_url` columns to `snapshots`
+- Created `system_settings` table for configuration
+- Default settings: `download_expiration_hours=1`, `max_download_size_mb=5000`
+
+**Repository Layer** ([`internal/hub/repository/repository.go:819`](internal/hub/repository/repository.go:819)):
+- `GetSetting()`: Retrieve setting by key
+- `ListSettings()`: Get all settings
+- `UpsertSetting()`: Create or update setting
+- `UpdateSnapshotDownloadInfo()`: Store download metadata
+- `GetSnapshotByDownloadToken()`: Lookup snapshot by token
+
+### Configurable Download Token Expiration
+
+**Status**: ✅ **Complete** - Admin-configurable via API, persisted to database
+
+**Implementation**:
+
+| Component | Location | Description |
+|-----------|----------|-------------|
+| Migration | [`00002_add_download_tracking.sql`](internal/hub/database/migrations/00002_add_download_tracking.sql) | `system_settings` table with default values |
+| Repository | [`repository.go:828-907`](internal/hub/repository/repository.go#L828) | CRUD operations for settings |
+| Service | [`service.go:1043-1097`](internal/hub/service/service.go#L1043) | Business logic for settings management |
+| Handlers | [`handlers.go:562-623`](internal/hub/handlers/handlers.go#L562) | Admin API endpoints |
+| Restore Client | [`client.go:56-68`](internal/restore/client/client.go#L56) | Fetch expiration from Hub |
+| Restore Main | [`main.go:31-46`](cmd/restore/main.go#L31) | Fetch on startup, pass to server |
+| Download Server | [`server.go:94-111`](internal/restore/download/server.go#L94) | Use configured expiration |
+
+**Settings API**:
+```bash
+# List all settings
+curl http://localhost:8080/api/v1/admin/settings
+
+# Get specific setting
+curl http://localhost:8080/api/v1/admin/settings/download_expiration_hours
+
+# Update download expiration (e.g., to 24 hours)
+curl -X PUT http://localhost:8080/api/v1/admin/settings/download_expiration_hours \
+  -H "Content-Type: application/json" \
+  -d '{"value":"24"}'
+
+# Verify change (restore service logs will show new value on restart)
+```
+
+**Settings Table Schema**:
+```sql
+CREATE TABLE system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP NOT NULL DEFAULT now()
+);
+```
+
+**Default Settings**:
+| Key | Value | Description |
+|-----|-------|-------------|
+| `download_expiration_hours` | `1` | Default download link expiration time in hours |
+| `max_download_size_mb` | `5000` | Maximum size for downloads in MB |
+
+### Testing
+
+**End-to-End Restore Test**:
+```bash
+# 1. Trigger restore
+curl -X POST http://localhost:8080/api/v1/snapshots/{snapshot_id}/restore
+
+# 2. Restore service processes job, creates download token
+# Check restore service logs for:
+# "download expiration set to X hours"
+
+# 3. Download the backup
+curl -O http://localhost:8082/download/{token}
+
+# 4. Verify snapshot has download metadata
+curl http://localhost:8080/api/v1/snapshots/{snapshot_id}
+# Returns: download_token, download_expires_at, download_url
+```
+
+**Test Results**:
+| Test | Expiration Hours | Status |
+|------|------------------|--------|
+| Initial test | 24 | ✅ Token created with 24-hour expiry |
+| Reconfiguration | 6 | ✅ Restarted service, tokens use 6 hours |
+| Download | N/A | ✅ ZIP file downloaded and extracted successfully |
 
 ---
 

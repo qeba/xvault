@@ -198,6 +198,7 @@ type JobCompleteRequest struct {
 	Status    JobStatus       `json:"status"`
 	Error     string          `json:"error,omitempty"`
 	Snapshot  *SnapshotResult `json:"snapshot,omitempty"`
+	Restore   *RestoreResult  `json:"restore,omitempty"`
 }
 
 // SnapshotResult is the snapshot metadata reported by the worker
@@ -211,6 +212,17 @@ type SnapshotResult struct {
 	ManifestJSON      json.RawMessage  `json:"manifest_json"`
 	EncryptionAlgorithm string         `json:"encryption_algorithm"`
 	Locator           SnapshotLocator  `json:"locator"`
+}
+
+// RestoreResult is the restore metadata reported by the worker
+type RestoreResult struct {
+	RestoreID      string `json:"restore_id"`
+	SnapshotID     string `json:"snapshot_id"`
+	Status         string `json:"status"`
+	DownloadURL    string `json:"download_url,omitempty"`
+	DownloadToken  string `json:"download_token,omitempty"`
+	SizeBytes      int64  `json:"size_bytes"`
+	ExpiresAt      string `json:"expires_at"`
 }
 
 // WorkerRegisterRequest is the request body for a worker to register

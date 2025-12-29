@@ -296,6 +296,31 @@ func (h *Handlers) HandleGetTenantPublicKey(c *fiber.Ctx) error {
 	})
 }
 
+// HandleGetTenantPrivateKey handles GET /internal/tenants/:id/private-key
+// This returns the DECRYPTED private key for restore operations
+// For v0, this is only accessible via internal API (worker to hub)
+func (h *Handlers) HandleGetTenantPrivateKey(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	tenantID := c.Params("id")
+	if tenantID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("tenant_id is required"), "Validation failed")
+	}
+
+	privateKey, err := h.service.GetTenantPrivateKeyForWorker(ctx, tenantID)
+	if err != nil {
+		log.Printf("failed to get tenant private key: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Tenant key not found")
+	}
+
+	// Return the decrypted private key
+	return c.JSON(fiber.Map{
+		"tenant_id":   tenantID,
+		"private_key": privateKey,
+	})
+}
+
 // HandleRegisterWorker handles POST /internal/workers/register
 func (h *Handlers) HandleRegisterWorker(c *fiber.Ctx) error {
 	ctx, cancel := contextWithTimeout(5 * time.Second)
@@ -599,4 +624,224 @@ func (h *Handlers) HandleListSchedules(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(schedules)
+}
+
+// Restore handlers
+
+// HandleEnqueueRestoreJob handles POST /api/v1/snapshots/:id/restore
+// This creates a restore job and returns a job ID
+func (h *Handlers) HandleEnqueueRestoreJob(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	snapshotID := c.Params("id")
+	if snapshotID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("snapshot_id is required"), "Validation failed")
+	}
+
+	// For v0, we'll use a default tenant_id from header or query
+	// In production, this would come from JWT auth
+	tenantID := c.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = c.Query("tenant_id")
+	}
+	if tenantID == "" {
+		return sendError(c, fiber.StatusUnauthorized, fmt.Errorf("tenant_id is required"), "Authentication required")
+	}
+
+	job, err := h.service.EnqueueRestoreJob(ctx, tenantID, snapshotID)
+	if err != nil {
+		log.Printf("failed to enqueue restore job: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to enqueue restore job")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(job)
+}
+
+// Internal/Restore Service handlers
+
+// HandleClaimRestoreJob handles POST /internal/restore-jobs/claim
+// Restore service claims the next available restore job
+func (h *Handlers) HandleClaimRestoreJob(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(10 * time.Second)
+	defer cancel()
+
+	var req service.RestoreJobClaimRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.ServiceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("service_id is required"), "Validation failed")
+	}
+
+	resp, err := h.service.ClaimRestoreJob(ctx, req)
+	if err != nil {
+		// Don't log "no jobs available" - it's expected when queue is empty
+		if err != sql.ErrNoRows {
+			log.Printf("failed to claim restore job: %v", err)
+		}
+		return sendError(c, fiber.StatusNotFound, err, "No restore jobs available")
+	}
+
+	return c.JSON(resp)
+}
+
+// HandleCompleteRestoreJob handles POST /internal/restore-jobs/:id/complete
+// Restore service reports job completion
+func (h *Handlers) HandleCompleteRestoreJob(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	jobID := c.Params("id")
+	if jobID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("job_id is required"), "Validation failed")
+	}
+
+	var req service.RestoreJobCompleteRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.ServiceID == "" || req.Status == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("service_id and status are required"), "Validation failed")
+	}
+
+	if err := h.service.CompleteRestoreJob(ctx, jobID, req); err != nil {
+		log.Printf("failed to complete restore job: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to complete restore job")
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+}
+
+// HandleRegisterRestoreService handles POST /internal/services/register
+// Restore service registration
+func (h *Handlers) HandleRegisterRestoreService(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	var req service.RegisterServiceRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.ServiceID == "" || req.Type == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("service_id and type are required"), "Validation failed")
+	}
+
+	service, err := h.service.RegisterRestoreService(ctx, req)
+	if err != nil {
+		log.Printf("failed to register restore service: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to register service")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(service)
+}
+
+// HandleRestoreServiceHeartbeat handles POST /internal/services/heartbeat
+func (h *Handlers) HandleRestoreServiceHeartbeat(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	var req service.ServiceHeartbeatRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.ServiceID == "" || req.Status == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("service_id and status are required"), "Validation failed")
+	}
+
+	if err := h.service.RestoreServiceHeartbeat(ctx, req); err != nil {
+		log.Printf("failed to update heartbeat: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update heartbeat")
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{"ok": true})
+}
+
+// Admin / Settings handlers
+
+// HandleListSettings handles GET /api/v1/admin/settings
+// Returns all system settings
+func (h *Handlers) HandleListSettings(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	settings, err := h.service.ListSettings(ctx)
+	if err != nil {
+		log.Printf("failed to list settings: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list settings")
+	}
+
+	return c.JSON(settings)
+}
+
+// HandleGetSetting handles GET /api/v1/admin/settings/:key
+// Returns a specific system setting
+func (h *Handlers) HandleGetSetting(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	key := c.Params("key")
+	if key == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("key is required"), "Validation failed")
+	}
+
+	setting, err := h.service.GetSetting(ctx, key)
+	if err != nil {
+		log.Printf("failed to get setting: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Setting not found")
+	}
+
+	return c.JSON(setting)
+}
+
+// HandleUpdateSetting handles PUT /api/v1/admin/settings/:key
+// Updates a system setting
+func (h *Handlers) HandleUpdateSetting(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	key := c.Params("key")
+	if key == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("key is required"), "Validation failed")
+	}
+
+	var req service.UpdateSettingRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.Value == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("value is required"), "Validation failed")
+	}
+
+	setting, err := h.service.UpdateSetting(ctx, key, req)
+	if err != nil {
+		log.Printf("failed to update setting: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update setting")
+	}
+
+	return c.JSON(setting)
+}
+
+// Internal/Settings handlers (for restore service)
+
+// HandleGetDownloadExpiration handles GET /internal/settings/download-expiration
+// Returns the download expiration setting in hours (for restore service)
+func (h *Handlers) HandleGetDownloadExpiration(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	hours, err := h.service.GetDownloadExpirationHours(ctx)
+	if err != nil {
+		log.Printf("failed to get download expiration: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to get download expiration")
+	}
+
+	return c.JSON(fiber.Map{
+		"hours": hours,
+	})
 }

@@ -141,6 +141,33 @@ func (c *HubClient) GetTenantPublicKey(ctx context.Context, tenantID string) (*T
 	return &keyResp, nil
 }
 
+// GetTenantPrivateKey fetches and decrypts a tenant's private key from the Hub
+// This is used for restore operations (decrypting backup artifacts)
+func (c *HubClient) GetTenantPrivateKey(ctx context.Context, tenantID string) (*TenantPrivateKeyResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/internal/tenants/"+tenantID+"/private-key", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tenant private key: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get tenant private key failed: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var keyResp TenantPrivateKeyResponse
+	if err := json.NewDecoder(resp.Body).Decode(&keyResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &keyResp, nil
+}
+
 // RegisterWorker registers this worker with the Hub
 func (c *HubClient) RegisterWorker(ctx context.Context, req WorkerRegisterRequest) error {
 	body, err := json.Marshal(req)
@@ -223,6 +250,17 @@ type JobCompleteRequest struct {
 	Status   string           `json:"status"`
 	Error    string           `json:"error,omitempty"`
 	Snapshot *SnapshotResult  `json:"snapshot,omitempty"`
+	Restore  *RestoreResult   `json:"restore,omitempty"`
+}
+
+type RestoreResult struct {
+	RestoreID     string `json:"restore_id"`
+	SnapshotID    string `json:"snapshot_id"`
+	Status        string `json:"status"`
+	DownloadURL   string `json:"download_url,omitempty"`
+	DownloadToken string `json:"download_token,omitempty"`
+	SizeBytes     int64  `json:"size_bytes"`
+	ExpiresAt     string `json:"expires_at"`
 }
 
 type SnapshotResult struct {
@@ -261,6 +299,11 @@ type TenantKeyResponse struct {
 	PublicKey          string `json:"public_key"`
 	EncryptedPrivateKey string `json:"encrypted_private_key"`
 	KeyStatus          string `json:"key_status"`
+}
+
+type TenantPrivateKeyResponse struct {
+	TenantID   string `json:"tenant_id"`
+	PrivateKey string `json:"private_key"`
 }
 
 type WorkerRegisterRequest struct {

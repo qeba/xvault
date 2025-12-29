@@ -119,10 +119,11 @@ func (o *Orchestrator) processNextJob(ctx context.Context) error {
 	case "delete_snapshot":
 		completeReq, err = o.processDeleteSnapshotJob(ctx, claimResp)
 	case "restore":
+		// Restore jobs are handled by the separate restore service
 		completeReq = client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
-			Error:    fmt.Sprintf("job type %s not yet implemented", claimResp.Type),
+			Error:    "restore jobs must be handled by restore service, not worker",
 		}
 	default:
 		completeReq = client.JobCompleteRequest{
