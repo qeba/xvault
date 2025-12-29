@@ -226,3 +226,48 @@ type WorkerHeartbeatRequest struct {
 	WorkerID string `json:"worker_id"`
 	Status   string `json:"status"` // "online", "offline", "draining"
 }
+
+// RetentionPolicy defines how long snapshots should be kept
+// This is stored as JSONB in the schedules table
+type RetentionPolicy struct {
+	// KeepLastN keeps the most recent N snapshots regardless of time
+	KeepLastN *int `json:"keep_last_n,omitempty"`
+
+	// KeepDaily keeps one snapshot per day for the specified number of days
+	KeepDaily *int `json:"keep_daily,omitempty"`
+
+	// KeepWeekly keeps one snapshot per week for the specified number of weeks
+	KeepWeekly *int `json:"keep_weekly,omitempty"`
+
+	// KeepMonthly keeps one snapshot per month for the specified number of months
+	KeepMonthly *int `json:"keep_monthly,omitempty"`
+
+	// MinAgeHours specifies the minimum age in hours before a snapshot can be deleted
+	// This prevents newly created snapshots from being immediately deleted
+	MinAgeHours *int `json:"min_age_hours,omitempty"`
+
+	// MaxAgeDays deletes all snapshots older than this many days, regardless of other rules
+	MaxAgeDays *int `json:"max_age_days,omitempty"`
+}
+
+// DefaultRetentionPolicy returns a sensible default retention policy
+func DefaultRetentionPolicy() RetentionPolicy {
+	keepLastN := 7
+	minAgeHours := 24
+	return RetentionPolicy{
+		KeepLastN:    &keepLastN,
+		MinAgeHours:  &minAgeHours,
+	}
+}
+
+// RetentionEvaluationResult represents the result of evaluating a retention policy
+type RetentionEvaluationResult struct {
+	// SnapshotsToDelete contains snapshot IDs that should be deleted
+	SnapshotsToDelete []string `json:"snapshots_to_delete"`
+
+	// SnapshotsToKeep contains snapshot IDs that are protected by the retention policy
+	SnapshotsToKeep []string `json:"snapshots_to_keep"`
+
+	// Summary contains a human-readable summary
+	Summary string `json:"summary"`
+}

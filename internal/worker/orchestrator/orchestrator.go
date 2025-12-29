@@ -116,7 +116,9 @@ func (o *Orchestrator) processNextJob(ctx context.Context) error {
 	switch claimResp.Type {
 	case "backup":
 		completeReq, err = o.processBackupJob(ctx, claimResp)
-	case "restore", "delete_snapshot":
+	case "delete_snapshot":
+		completeReq, err = o.processDeleteSnapshotJob(ctx, claimResp)
+	case "restore":
 		completeReq = client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -287,6 +289,39 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 				LocalPath:      localPath,
 			},
 		},
+	}, nil
+}
+
+// processDeleteSnapshotJob processes a delete_snapshot job
+func (o *Orchestrator) processDeleteSnapshotJob(ctx context.Context, job *client.JobClaimResponse) (client.JobCompleteRequest, error) {
+	// Extract snapshot ID from payload
+	if job.Payload.DeleteSnapshotID == nil || *job.Payload.DeleteSnapshotID == "" {
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    "delete_snapshot_id is required in payload",
+		}, fmt.Errorf("missing delete_snapshot_id")
+	}
+
+	snapshotID := *job.Payload.DeleteSnapshotID
+
+	log.Printf("worker %s deleting snapshot %s", o.workerID, snapshotID)
+
+	// Delete the snapshot from local storage
+	err := o.storage.DeleteSnapshot(job.TenantID, job.SourceID, snapshotID)
+	if err != nil {
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to delete snapshot: %v", err),
+		}, err
+	}
+
+	log.Printf("worker %s successfully deleted snapshot %s", o.workerID, snapshotID)
+
+	return client.JobCompleteRequest{
+		WorkerID: o.workerID,
+		Status:   "completed",
 	}, nil
 }
 

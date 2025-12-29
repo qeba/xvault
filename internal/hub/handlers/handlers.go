@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -382,4 +383,216 @@ func (h *Handlers) HandleGetSnapshot(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(snapshot)
+}
+
+// Admin / Retention handlers
+
+// HandleRunRetentionForAllSources handles POST /api/v1/admin/retention/run
+// This manually triggers retention evaluation for all enabled sources
+func (h *Handlers) HandleRunRetentionForAllSources(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(30 * time.Second)
+	defer cancel()
+
+	results, err := h.service.RunRetentionEvaluationForAllSources(ctx)
+	if err != nil {
+		log.Printf("failed to run retention evaluation: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to run retention evaluation")
+	}
+
+	// Build summary
+	var totalSnapshots, totalToKeep, totalToDelete, totalJobsEnqueued int
+	for _, result := range results {
+		if result.EvaluationResult != nil {
+			totalSnapshots += len(result.EvaluationResult.SnapshotsToKeep) + len(result.EvaluationResult.SnapshotsToDelete)
+			totalToKeep += len(result.EvaluationResult.SnapshotsToKeep)
+			totalToDelete += len(result.EvaluationResult.SnapshotsToDelete)
+		}
+		totalJobsEnqueued += result.JobsEnqueued
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"results":          results,
+		"summary": fiber.Map{
+			"sources_evaluated": len(results),
+			"total_snapshots":   totalSnapshots,
+			"total_to_keep":     totalToKeep,
+			"total_to_delete":   totalToDelete,
+			"jobs_enqueued":     totalJobsEnqueued,
+		},
+	})
+}
+
+// HandleRunRetentionForSource handles POST /api/v1/admin/retention/run/:source_id
+// This manually triggers retention evaluation for a specific source
+func (h *Handlers) HandleRunRetentionForSource(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(10 * time.Second)
+	defer cancel()
+
+	sourceID := c.Params("id")
+	if sourceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("source_id is required"), "Validation failed")
+	}
+
+	result, err := h.service.RunRetentionEvaluationForSource(ctx, sourceID)
+	if err != nil {
+		log.Printf("failed to run retention evaluation for source %s: %v", sourceID, err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to run retention evaluation")
+	}
+
+	return c.Status(fiber.StatusOK).JSON(fiber.Map{
+		"source_id": sourceID,
+		"result":    result,
+	})
+}
+
+// HandleGetSourceRetentionPolicy handles GET /api/v1/sources/:id/retention
+// Returns the retention policy for a specific source
+func (h *Handlers) HandleGetSourceRetentionPolicy(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	sourceID := c.Params("id")
+	if sourceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("source_id is required"), "Validation failed")
+	}
+
+	schedule, err := h.service.GetScheduleForSource(ctx, sourceID)
+	if err != nil {
+		log.Printf("failed to get schedule for source %s: %v", sourceID, err)
+		return sendError(c, fiber.StatusNotFound, err, "Schedule not found for this source")
+	}
+
+	// Parse and return the retention policy
+	var policy types.RetentionPolicy
+	if len(schedule.RetentionPolicy) > 0 {
+		if err := json.Unmarshal(schedule.RetentionPolicy, &policy); err != nil {
+			return sendError(c, fiber.StatusInternalServerError, err, "Failed to parse retention policy")
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"source_id":         sourceID,
+		"schedule_id":       schedule.ID,
+		"retention_policy":  policy,
+	})
+}
+
+// HandleUpdateSourceRetentionPolicy handles PUT /api/v1/sources/:id/retention
+// Updates the retention policy for a specific source
+func (h *Handlers) HandleUpdateSourceRetentionPolicy(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	sourceID := c.Params("id")
+	if sourceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("source_id is required"), "Validation failed")
+	}
+
+	var req service.UpdateSourceRetentionPolicyRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	schedule, err := h.service.UpdateSourceRetentionPolicy(ctx, sourceID, req)
+	if err != nil {
+		log.Printf("failed to update retention policy for source %s: %v", sourceID, err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update retention policy")
+	}
+
+	// Parse and return the updated retention policy
+	var policy types.RetentionPolicy
+	json.Unmarshal(schedule.RetentionPolicy, &policy)
+
+	return c.JSON(fiber.Map{
+		"source_id":        sourceID,
+		"schedule_id":      schedule.ID,
+		"retention_policy": policy,
+	})
+}
+
+// Schedule handlers
+
+// HandleCreateSchedule handles POST /api/v1/schedules
+func (h *Handlers) HandleCreateSchedule(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	var req service.CreateScheduleRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.TenantID == "" || req.SourceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("tenant_id and source_id are required"), "Validation failed")
+	}
+
+	schedule, err := h.service.CreateSchedule(ctx, req)
+	if err != nil {
+		log.Printf("failed to create schedule: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create schedule")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(schedule)
+}
+
+// HandleGetSchedule handles GET /api/v1/schedules/:id
+func (h *Handlers) HandleGetSchedule(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	scheduleID := c.Params("id")
+	if scheduleID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("schedule_id is required"), "Validation failed")
+	}
+
+	schedule, err := h.service.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		log.Printf("failed to get schedule: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Schedule not found")
+	}
+
+	return c.JSON(schedule)
+}
+
+// HandleUpdateSchedule handles PUT /api/v1/schedules/:id
+func (h *Handlers) HandleUpdateSchedule(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	scheduleID := c.Params("id")
+	if scheduleID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("schedule_id is required"), "Validation failed")
+	}
+
+	var req service.UpdateScheduleRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	schedule, err := h.service.UpdateSchedule(ctx, scheduleID, req)
+	if err != nil {
+		log.Printf("failed to update schedule: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update schedule")
+	}
+
+	return c.JSON(schedule)
+}
+
+// HandleListSchedules handles GET /api/v1/schedules
+func (h *Handlers) HandleListSchedules(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	tenantID := c.Query("tenant_id")
+	if tenantID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("tenant_id query parameter is required"), "Validation failed")
+	}
+
+	schedules, err := h.service.ListSchedules(ctx, tenantID)
+	if err != nil {
+		log.Printf("failed to list schedules: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list schedules")
+	}
+
+	return c.JSON(schedules)
 }

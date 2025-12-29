@@ -280,6 +280,29 @@ func (r *Repository) CreateJob(ctx context.Context, tenantID string, jobType typ
 	return &job, nil
 }
 
+// CreateJobWithTargetWorker creates a new job with a specific target worker
+// This is used for delete_snapshot jobs that must go to the worker that owns the snapshot
+func (r *Repository) CreateJobWithTargetWorker(ctx context.Context, tenantID string, jobType types.JobType, sourceID *string, targetWorkerID string, payload json.RawMessage, priority int) (*Job, error) {
+	id := uuid.New().String()
+	now := time.Now()
+
+	query := `INSERT INTO jobs (id, tenant_id, source_id, type, status, priority, target_worker_id, payload, created_at, updated_at)
+	          VALUES ($1, $2, $3, $4, 'queued', $5, $6, $7, $8, $9)
+	          RETURNING id, tenant_id, source_id, type, status, priority, target_worker_id, lease_expires_at,
+	                    attempt, payload, started_at, finished_at, error_code, error_message, created_at, updated_at`
+
+	var job Job
+	err := r.db.QueryRowContext(ctx, query, id, tenantID, sourceID, string(jobType), priority, targetWorkerID, payload, now, now).Scan(
+		&job.ID, &job.TenantID, &job.SourceID, &job.Type, &job.Status, &job.Priority, &job.TargetWorkerID, &job.LeaseExpiresAt,
+		&job.Attempt, &job.Payload, &job.StartedAt, &job.FinishedAt, &job.ErrorCode, &job.ErrorMessage, &job.CreatedAt, &job.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create job with target worker: %w", err)
+	}
+
+	return &job, nil
+}
+
 // ClaimJob updates a job to running status and sets a lease
 func (r *Repository) ClaimJob(ctx context.Context, workerID string, leaseDuration time.Duration) (*Job, error) {
 	now := time.Now()
@@ -534,4 +557,219 @@ func (r *Repository) GetWorker(ctx context.Context, workerID string) (*Worker, e
 	}
 
 	return &worker, nil
+}
+
+// Schedule represents a schedule record with retention policy
+type Schedule struct {
+	ID              string          `json:"id"`
+	TenantID        string          `json:"tenant_id"`
+	SourceID        string          `json:"source_id"`
+	Cron            *string         `json:"cron,omitempty"`
+	IntervalMinutes *int            `json:"interval_minutes,omitempty"`
+	Timezone        string          `json:"timezone"`
+	Status          string          `json:"status"`
+	RetentionPolicy json.RawMessage `json:"retention_policy"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+}
+
+// GetScheduleForSource retrieves the schedule for a specific source
+func (r *Repository) GetScheduleForSource(ctx context.Context, sourceID string) (*Schedule, error) {
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	          FROM schedules WHERE source_id = $1`
+
+	var schedule Schedule
+	err := r.db.QueryRowContext(ctx, query, sourceID).Scan(
+		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schedule: %w", err)
+	}
+
+	return &schedule, nil
+}
+
+// ListAllSchedules retrieves all schedules (for retention evaluation)
+func (r *Repository) ListAllSchedules(ctx context.Context) ([]*Schedule, error) {
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	          FROM schedules WHERE status = 'enabled'`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list schedules: %w", err)
+	}
+	defer rows.Close()
+
+	var schedules []*Schedule
+	for rows.Next() {
+		var schedule Schedule
+		err := rows.Scan(
+			&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan schedule: %w", err)
+		}
+		schedules = append(schedules, &schedule)
+	}
+
+	return schedules, nil
+}
+
+// ListSnapshotsForRetention retrieves all completed snapshots for a source, ordered by creation time
+func (r *Repository) ListSnapshotsForRetention(ctx context.Context, tenantID, sourceID string) ([]*Snapshot, error) {
+	query := `SELECT id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
+	          manifest_json, encryption_algorithm, encryption_key_id, encryption_recipient,
+	          storage_backend, worker_id, local_path, bucket, object_key, etag, created_at, updated_at
+	          FROM snapshots
+	          WHERE tenant_id = $1 AND source_id = $2 AND status = 'completed'
+	          ORDER BY created_at ASC`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots for retention: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []*Snapshot
+	for rows.Next() {
+		var snap Snapshot
+		err := rows.Scan(
+			&snap.ID, &snap.TenantID, &snap.SourceID, &snap.JobID, &snap.Status, &snap.SizeBytes,
+			&snap.StartedAt, &snap.FinishedAt, &snap.DurationMs, &snap.ManifestJSON, &snap.EncryptionAlgorithm,
+			&snap.EncryptionKeyID, &snap.EncryptionRecipient, &snap.StorageBackend, &snap.WorkerID,
+			&snap.LocalPath, &snap.Bucket, &snap.ObjectKey, &snap.ETag, &snap.CreatedAt, &snap.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan snapshot: %w", err)
+		}
+		snapshots = append(snapshots, &snap)
+	}
+
+	return snapshots, nil
+}
+
+// DeleteSnapshot removes a snapshot record from the database
+func (r *Repository) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	query := `DELETE FROM snapshots WHERE id = $1`
+
+	result, err := r.db.ExecContext(ctx, query, snapshotID)
+	if err != nil {
+		return fmt.Errorf("failed to delete snapshot: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("snapshot not found: %s", snapshotID)
+	}
+
+	return nil
+}
+
+// CreateSchedule creates a new schedule for a source
+func (r *Repository) CreateSchedule(ctx context.Context, tenantID, sourceID string, cron *string, intervalMinutes *int, timezone string, retentionPolicy json.RawMessage) (*Schedule, error) {
+	id := uuid.New().String()
+	now := time.Now()
+
+	query := `INSERT INTO schedules (id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at)
+	          VALUES ($1, $2, $3, $4, $5, $6, 'enabled', $7, $8, $9)
+	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at`
+
+	var schedule Schedule
+	err := r.db.QueryRowContext(ctx, query, id, tenantID, sourceID, cron, intervalMinutes, timezone, retentionPolicy, now, now).Scan(
+		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create schedule: %w", err)
+	}
+
+	return &schedule, nil
+}
+
+// UpdateSchedule updates an existing schedule
+func (r *Repository) UpdateSchedule(ctx context.Context, scheduleID string, cron *string, intervalMinutes *int, timezone string, status string, retentionPolicy json.RawMessage) (*Schedule, error) {
+	now := time.Now()
+
+	query := `UPDATE schedules
+	          SET cron = $2, interval_minutes = $3, timezone = $4, status = $5, retention_policy = $6, updated_at = $7
+	          WHERE id = $1
+	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at`
+
+	var schedule Schedule
+	err := r.db.QueryRowContext(ctx, query, scheduleID, cron, intervalMinutes, timezone, status, retentionPolicy, now).Scan(
+		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update schedule: %w", err)
+	}
+
+	return &schedule, nil
+}
+
+// UpdateScheduleRetention updates only the retention policy for a schedule
+func (r *Repository) UpdateScheduleRetention(ctx context.Context, scheduleID string, retentionPolicy json.RawMessage) (*Schedule, error) {
+	now := time.Now()
+
+	query := `UPDATE schedules
+	          SET retention_policy = $2, updated_at = $3
+	          WHERE id = $1
+	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at`
+
+	var schedule Schedule
+	err := r.db.QueryRowContext(ctx, query, scheduleID, retentionPolicy, now).Scan(
+		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update schedule retention policy: %w", err)
+	}
+
+	return &schedule, nil
+}
+
+// ListSchedulesByTenant retrieves all schedules for a specific tenant
+func (r *Repository) ListSchedulesByTenant(ctx context.Context, tenantID string) ([]*Schedule, error) {
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	          FROM schedules WHERE tenant_id = $1 ORDER BY created_at DESC`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list schedules for tenant: %w", err)
+	}
+	defer rows.Close()
+
+	var schedules []*Schedule
+	for rows.Next() {
+		var schedule Schedule
+		err := rows.Scan(
+			&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan schedule: %w", err)
+		}
+		schedules = append(schedules, &schedule)
+	}
+
+	return schedules, nil
+}
+
+// GetSchedule retrieves a schedule by ID
+func (r *Repository) GetSchedule(ctx context.Context, scheduleID string) (*Schedule, error) {
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	          FROM schedules WHERE id = $1`
+
+	var schedule Schedule
+	err := r.db.QueryRowContext(ctx, query, scheduleID).Scan(
+		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schedule: %w", err)
+	}
+
+	return &schedule, nil
 }

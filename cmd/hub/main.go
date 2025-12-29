@@ -120,12 +120,29 @@ func main() {
 	api.Get("/sources", h.HandleListSources)
 	api.Get("/sources/:id", h.HandleGetSource)
 
+	// Schedule routes
+	api.Post("/schedules", h.HandleCreateSchedule)
+	api.Get("/schedules", h.HandleListSchedules)
+	api.Get("/schedules/:id", h.HandleGetSchedule)
+	api.Put("/schedules/:id", h.HandleUpdateSchedule)
+
 	// Job routes
 	api.Post("/jobs", h.HandleEnqueueBackupJob)
 
 	// Snapshot routes
 	api.Get("/snapshots", h.HandleListSnapshots)
 	api.Get("/snapshots/:id", h.HandleGetSnapshot)
+
+	// Source retention policy routes
+	api.Get("/sources/:id/retention", h.HandleGetSourceRetentionPolicy)
+	api.Put("/sources/:id/retention", h.HandleUpdateSourceRetentionPolicy)
+
+	// Admin routes
+	admin := api.Group("/admin")
+
+	// Retention management
+	admin.Post("/retention/run", h.HandleRunRetentionForAllSources)
+	admin.Post("/retention/run/:id", h.HandleRunRetentionForSource)
 
 	// Internal/Worker routes
 	internal := app.Group("/internal")
@@ -144,10 +161,60 @@ func main() {
 	internal.Post("/workers/register", h.HandleRegisterWorker)
 	internal.Post("/workers/heartbeat", h.HandleWorkerHeartbeat)
 
+	// Start retention scheduler in background
+	retentionIntervalHours := getenv("RETENTION_EVALUATION_INTERVAL_HOURS", "6")
+	intervalHours, err := time.ParseDuration(retentionIntervalHours + "h")
+	if err != nil {
+		log.Printf("invalid RETENTION_EVALUATION_INTERVAL_HOURS, using default 6h: %v", err)
+		intervalHours = 6 * time.Hour
+	}
+	go startRetentionScheduler(svc, intervalHours)
+
 	log.Printf("hub listening on %s", addr)
 	if err := app.Listen(addr); err != nil {
 		log.Fatalf("hub server error: %v", err)
 	}
+}
+
+// startRetentionScheduler runs periodic retention evaluation
+func startRetentionScheduler(svc *service.Service, interval time.Duration) {
+	log.Printf("starting retention scheduler (interval: %v)", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Run once on startup after a short delay
+	time.Sleep(30 * time.Second)
+	runRetentionEvaluation(svc)
+
+	for range ticker.C {
+		runRetentionEvaluation(svc)
+	}
+}
+
+// runRetentionEvaluation runs retention evaluation and logs results
+func runRetentionEvaluation(svc *service.Service) {
+	ctx, cancel := contextWithTimeout(5 * time.Minute)
+	defer cancel()
+
+	log.Println("running retention evaluation...")
+	results, err := svc.RunRetentionEvaluationForAllSources(ctx)
+	if err != nil {
+		log.Printf("retention evaluation failed: %v", err)
+		return
+	}
+
+	var totalEvaluated, totalKept, totalDeleted, totalJobsEnqueued int
+	for _, r := range results {
+		totalEvaluated++
+		if r.EvaluationResult != nil {
+			totalKept += len(r.EvaluationResult.SnapshotsToKeep)
+			totalDeleted += len(r.EvaluationResult.SnapshotsToDelete)
+		}
+		totalJobsEnqueued += r.JobsEnqueued
+	}
+
+	log.Printf("retention evaluation complete: sources=%d, kept=%d, to_delete=%d, jobs_enqueued=%d",
+		totalEvaluated, totalKept, totalDeleted, totalJobsEnqueued)
 }
 
 func getenv(key, fallback string) string {

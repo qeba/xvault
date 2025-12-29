@@ -253,17 +253,170 @@ curl -X POST "http://localhost:8080/api/v1/jobs?tenant_id=..." \
 
 ## Step 6: Retention & Cleanup (v0)
 
-**Goal**: Prevent unbounded disk growth
+**Status**: ✅ **Complete** - Full retention policy evaluation and cleanup pipeline implemented
+
+**Goal**: Prevent unbounded disk growth as backups accumulate
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 6.1 | Retention policy evaluation in Hub | ⏳ | Parse `retention_policy` JSONB from schedules |
-| 6.2 | Identify snapshots to delete per policy | ⏳ | |
-| 6.3 | Enqueue `delete_snapshot` jobs | ⏳ | Must target `snapshot.worker_id` |
-| 6.4 | Worker: handle `delete_snapshot` job type | ⏳ | |
-| 6.5 | Worker deletes local filesystem path | ⏳ | |
-| 6.6 | Worker reports completion to Hub | ⏳ | |
-| 6.7 | Hub updates snapshot status or deletes record | ⏳ | |
+| 6.1 | Retention policy evaluation in Hub | ✅ | Parse `retention_policy` JSONB from schedules |
+| 6.2 | Identify snapshots to delete per policy | ✅ | Multiple policy types supported |
+| 6.3 | Enqueue `delete_snapshot` jobs | ✅ | Must target `snapshot.worker_id` |
+| 6.4 | Worker: handle `delete_snapshot` job type | ✅ | |
+| 6.5 | Worker deletes local filesystem path | ✅ | |
+| 6.6 | Worker reports completion to Hub | ✅ | |
+| 6.7 | Hub updates snapshot status or deletes record | ✅ | |
+
+### Implementation Details
+
+**Retention Policy Types** ([`pkg/types/types.go:230`](pkg/types/types.go:230)):
+- `keep_last_n`: Keep the N most recent snapshots
+- `keep_daily`: Keep one snapshot per day for N days
+- `keep_weekly`: Keep one snapshot per week for N weeks
+- `keep_monthly`: Keep one snapshot per month for N months
+- `min_age_hours`: Don't delete snapshots younger than N hours
+- `max_age_days`: Delete all snapshots older than N days (overrides other rules)
+
+**Service Layer** ([`internal/hub/service/service.go:351`](internal/hub/service/service.go:351)):
+- `EvaluateRetentionPolicy()`: Core retention logic with time-based grouping
+- `EnqueueDeleteJob()`: Creates delete jobs targeting the correct worker
+- `RunRetentionEvaluationForSource()`: Evaluates and enqueues for one source
+- `RunRetentionEvaluationForAllSources()`: Batch evaluation for all sources
+
+**Repository Layer** ([`internal/hub/repository/repository.go:562`](internal/hub/repository/repository.go:562)):
+- `GetScheduleForSource()`: Get schedule with retention policy
+- `ListAllSchedules()`: Get all enabled schedules
+- `ListSnapshotsForRetention()`: Get snapshots ordered by created_at
+- `DeleteSnapshot()`: Remove snapshot record from database
+
+**Worker Handler** ([`internal/worker/orchestrator/orchestrator.go:295`](internal/worker/orchestrator/orchestrator.go:295)):
+- `processDeleteSnapshotJob()`: Handles delete job execution
+- Calls `storage.DeleteSnapshot()` to remove files from disk
+
+**Job Completion** ([`internal/hub/service/service.go:304`](internal/hub/service/service.go:304)):
+- When delete job completes successfully, snapshot record is removed from database
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/admin/retention/run` | POST | Run retention evaluation for all sources |
+| `/api/v1/admin/retention/run/:id` | POST | Run retention evaluation for a specific source |
+| `/api/v1/sources/:id/retention` | GET | Get retention policy for a source |
+| `/api/v1/sources/:id/retention` | PUT | Update retention policy for a source |
+| `/api/v1/schedules` | POST | Create schedule with retention policy |
+| `/api/v1/schedules` | GET | List schedules for a tenant |
+| `/api/v1/schedules/:id` | GET | Get schedule details |
+| `/api/v1/schedules/:id` | PUT | Update schedule |
+
+### Example Retention Policy
+
+```json
+{
+  "keep_last_n": 7,
+  "keep_daily": 30,
+  "keep_weekly": 12,
+  "keep_monthly": 6,
+  "min_age_hours": 24,
+  "max_age_days": 365
+}
+```
+
+This policy:
+- Keeps the 7 most recent snapshots
+- Keeps one snapshot per day for 30 days
+- Keeps one snapshot per week for 12 weeks
+- Keeps one snapshot per month for 6 months
+- Never deletes snapshots younger than 24 hours
+- Deletes all snapshots older than 365 days
+
+### Testing
+
+```bash
+# Run retention evaluation for all sources
+curl -X POST http://localhost:8080/api/v1/admin/retention/run
+
+# Run retention evaluation for a specific source
+curl -X POST http://localhost:8080/api/v1/admin/retention/run/{source_id}
+```
+
+**Response Example**:
+```json
+{
+  "results": [...],
+  "summary": {
+    "sources_evaluated": 1,
+    "total_snapshots": 10,
+    "total_to_keep": 7,
+    "total_to_delete": 3,
+    "jobs_enqueued": 3
+  }
+}
+```
+
+### Schedule Management & User-Configurable Retention
+
+**Status**: ✅ **Complete** - Users can now configure retention policies via API
+
+Users can configure retention policies when creating or updating schedules. The retention policy is stored in the `schedules.retention_policy` JSONB column.
+
+**API Endpoints**:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/schedules` | POST | Create schedule with retention policy |
+| `/api/v1/schedules` | GET | List schedules for a tenant |
+| `/api/v1/schedules/:id` | GET | Get schedule details |
+| `/api/v1/schedules/:id` | PUT | Update schedule |
+| `/api/v1/sources/:id/retention` | GET | Get retention policy for a source |
+| `/api/v1/sources/:id/retention` | PUT | Update retention policy for a source |
+
+**Repository Layer** ([`internal/hub/repository/repository.go:670`](internal/hub/repository/repository.go:670)):
+- `CreateSchedule()`: Create a new schedule with retention policy
+- `UpdateSchedule()`: Update schedule (cron, interval, status, retention)
+- `UpdateScheduleRetention()`: Update only the retention policy
+- `ListSchedulesByTenant()`: Get all schedules for a tenant
+- `GetSchedule()`: Get schedule by ID
+
+**Service Layer** ([`internal/hub/service/service.go:640`](internal/hub/service/service.go:640)):
+- `CreateSchedule()`: Validate and create schedule
+- `UpdateSchedule()`: Update schedule with validation
+- `UpdateSourceRetentionPolicy()`: Quick update just the retention policy
+- `GetScheduleForSource()`: Get schedule for a specific source
+
+**Automatic Retention Scheduler** ([`cmd/hub/main.go:179`](cmd/hub/main.go:179)):
+- Background goroutine runs retention evaluation periodically
+- Configurable via `RETENTION_EVALUATION_INTERVAL_HOURS` (default: 6 hours)
+- Runs once 30 seconds after startup, then every interval
+- Logs summary of evaluation results
+
+### Example: User Creates Backup with Retention
+
+```bash
+# 1. Create a schedule with retention policy
+curl -X POST http://localhost:8080/api/v1/schedules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "...",
+    "source_id": "...",
+    "interval_minutes": 60,
+    "retention_policy": {
+      "keep_last_n": 7,
+      "keep_daily": 30,
+      "min_age_hours": 24
+    }
+  }'
+
+# 2. Update retention policy later
+curl -X PUT http://localhost:8080/api/v1/sources/{source_id}/retention \
+  -H "Content-Type: application/json" \
+  -d '{
+    "retention_policy": {
+      "keep_last_n": 14,
+      "keep_weekly": 8
+    }
+  }'
+```
 
 ---
 

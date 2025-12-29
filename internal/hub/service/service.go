@@ -287,17 +287,32 @@ func (s *Service) CompleteJob(ctx context.Context, jobID string, req types.JobCo
 		return fmt.Errorf("failed to update job: %w", err)
 	}
 
+	// Get job details to determine job type
+	job, err := s.repo.GetJob(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("failed to get job details: %w", err)
+	}
+
 	// If snapshot was created, store it
 	if req.Snapshot != nil {
-		// Get job details to find tenant_id and source_id
-		job, err := s.repo.GetJob(ctx, jobID) // Need to add this method to repository
-		if err != nil {
-			return fmt.Errorf("failed to get job details: %w", err)
-		}
-
 		_, err = s.repo.CreateSnapshot(ctx, job.TenantID, *job.SourceID, jobID, *req.Snapshot)
 		if err != nil {
 			return fmt.Errorf("failed to create snapshot: %w", err)
+		}
+	}
+
+	// If delete_snapshot job completed successfully, delete the snapshot record
+	if job.Type == string(types.JobTypeDeleteSnapshot) && finalStatus == types.JobStatusCompleted {
+		// Parse the payload to get the snapshot ID
+		var payload types.JobPayload
+		if err := json.Unmarshal(job.Payload, &payload); err != nil {
+			return fmt.Errorf("failed to parse delete job payload: %w", err)
+		}
+
+		if payload.DeleteSnapshotID != nil {
+			if err := s.repo.DeleteSnapshot(ctx, *payload.DeleteSnapshotID); err != nil {
+				return fmt.Errorf("failed to delete snapshot record: %w", err)
+			}
 		}
 	}
 
@@ -346,4 +361,445 @@ func (s *Service) GetSnapshot(ctx context.Context, snapshotID string) (*reposito
 	}
 
 	return snapshot, nil
+}
+
+// EvaluateRetentionPolicy evaluates a retention policy against a list of snapshots
+// and returns which snapshots should be kept and which should be deleted
+func (s *Service) EvaluateRetentionPolicy(ctx context.Context, tenantID, sourceID string, policy types.RetentionPolicy) (*types.RetentionEvaluationResult, error) {
+	// Get all completed snapshots for this source, ordered by created_at ASC
+	snapshots, err := s.repo.ListSnapshotsForRetention(ctx, tenantID, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots for retention: %w", err)
+	}
+
+	// Build a set of snapshots to protect
+	protected := make(map[string]bool) // snapshot ID -> true
+
+	now := time.Now()
+
+	// Rule 1: MinAgeHours - protect snapshots younger than minimum age
+	if policy.MinAgeHours != nil {
+		minAge := time.Duration(*policy.MinAgeHours) * time.Hour
+		for _, snap := range snapshots {
+			snapAge := now.Sub(snap.CreatedAt)
+			if snapAge < minAge {
+				protected[snap.ID] = true
+			}
+		}
+	}
+
+	// Rule 2: MaxAgeDays - mark snapshots older than max age for deletion (overrides protection)
+	var maxAgeTime time.Time
+	if policy.MaxAgeDays != nil {
+		maxAge := time.Duration(*policy.MaxAgeDays) * 24 * time.Hour
+		maxAgeTime = now.Add(-maxAge)
+	}
+
+	// Rule 3: KeepLastN - keep the N most recent snapshots
+	if policy.KeepLastN != nil {
+		count := *policy.KeepLastN
+		// Snapshots are ordered ASC, so we take the last N
+		startIdx := 0
+		if len(snapshots) > count {
+			startIdx = len(snapshots) - count
+		}
+		for i := startIdx; i < len(snapshots); i++ {
+			protected[snapshots[i].ID] = true
+		}
+	}
+
+	// Rule 4: KeepDaily - keep one snapshot per day for N days
+	if policy.KeepDaily != nil {
+		days := *policy.KeepDaily
+		// Group snapshots by day (in UTC)
+		dailySnapshots := make(map[string]*repository.Snapshot) // day string -> snapshot
+		for _, snap := range snapshots {
+			day := snap.CreatedAt.UTC().Format("2006-01-02")
+			// Keep the most recent snapshot for each day
+			if existing, ok := dailySnapshots[day]; !ok || snap.CreatedAt.After(existing.CreatedAt) {
+				dailySnapshots[day] = snap
+			}
+		}
+		// Protect snapshots within the daily retention window
+		cutoffDate := now.AddDate(0, 0, -days).UTC().Format("2006-01-02")
+		for day, snap := range dailySnapshots {
+			if day >= cutoffDate {
+				protected[snap.ID] = true
+			}
+		}
+	}
+
+	// Rule 5: KeepWeekly - keep one snapshot per week for N weeks
+	if policy.KeepWeekly != nil {
+		weeks := *policy.KeepWeekly
+		// Group snapshots by ISO week
+		weeklySnapshots := make(map[string]*repository.Snapshot) // year-week -> snapshot
+		for _, snap := range snapshots {
+			year, week := snap.CreatedAt.ISOWeek()
+			key := fmt.Sprintf("%d-W%02d", year, week)
+			if existing, ok := weeklySnapshots[key]; !ok || snap.CreatedAt.After(existing.CreatedAt) {
+				weeklySnapshots[key] = snap
+			}
+		}
+		// Protect snapshots within the weekly retention window
+		cutoffWeek := now.AddDate(0, 0, -weeks*7)
+		for _, snap := range weeklySnapshots {
+			if snap.CreatedAt.After(cutoffWeek) {
+				protected[snap.ID] = true
+			}
+		}
+	}
+
+	// Rule 6: KeepMonthly - keep one snapshot per month for N months
+	if policy.KeepMonthly != nil {
+		months := *policy.KeepMonthly
+		// Group snapshots by month
+		monthlySnapshots := make(map[string]*repository.Snapshot) // year-month -> snapshot
+		for _, snap := range snapshots {
+			month := snap.CreatedAt.UTC().Format("2006-01")
+			if existing, ok := monthlySnapshots[month]; !ok || snap.CreatedAt.After(existing.CreatedAt) {
+				monthlySnapshots[month] = snap
+			}
+		}
+		// Protect snapshots within the monthly retention window
+		cutoffMonth := now.AddDate(0, -months, 0)
+		for _, snap := range monthlySnapshots {
+			if snap.CreatedAt.After(cutoffMonth) {
+				protected[snap.ID] = true
+			}
+		}
+	}
+
+	// Build results
+	var toDelete, toKeep []string
+
+	for _, snap := range snapshots {
+		// Check max age first (overrides protection)
+		if policy.MaxAgeDays != nil && snap.CreatedAt.Before(maxAgeTime) {
+			toDelete = append(toDelete, snap.ID)
+			continue
+		}
+
+		if protected[snap.ID] {
+			toKeep = append(toKeep, snap.ID)
+		} else {
+			toDelete = append(toDelete, snap.ID)
+		}
+	}
+
+	result := &types.RetentionEvaluationResult{
+		SnapshotsToDelete: toDelete,
+		SnapshotsToKeep:   toKeep,
+		Summary: fmt.Sprintf("Evaluated %d snapshots: %d to keep, %d to delete",
+			len(snapshots), len(toKeep), len(toDelete)),
+	}
+
+	return result, nil
+}
+
+// EnqueueDeleteJob creates a delete_snapshot job for a specific snapshot
+// The job is targeted to the worker that owns the snapshot
+func (s *Service) EnqueueDeleteJob(ctx context.Context, snapshotID string) (*repository.Job, error) {
+	// Get snapshot details
+	snapshot, err := s.repo.GetSnapshot(ctx, snapshotID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get snapshot: %w", err)
+	}
+
+	// Verify snapshot has a worker_id (required for local_fs storage)
+	if snapshot.WorkerID == nil || *snapshot.WorkerID == "" {
+		return nil, fmt.Errorf("snapshot has no worker_id, cannot delete")
+	}
+
+	// Build job payload
+	payload := types.JobPayload{
+		DeleteSnapshotID: &snapshotID,
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Create job with target worker (higher priority for cleanup)
+	priority := 10 // Higher than normal backup jobs
+	job, err := s.repo.CreateJobWithTargetWorker(
+		ctx,
+		snapshot.TenantID,
+		types.JobTypeDeleteSnapshot,
+		&snapshot.SourceID,
+		*snapshot.WorkerID,
+		payloadJSON,
+		priority,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create delete job: %w", err)
+	}
+
+	// Enqueue to Redis
+	jobMsg := map[string]any{
+		"job_id":     job.ID,
+		"tenant_id":  snapshot.TenantID,
+		"type":       "delete_snapshot",
+		"priority":   priority,
+		"created_at": job.CreatedAt.Format(time.RFC3339),
+	}
+
+	jobMsgJSON, err := json.Marshal(jobMsg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal job message: %w", err)
+	}
+
+	if err := s.redis.LPush(ctx, JobQueueKey, jobMsgJSON).Err(); err != nil {
+		return nil, fmt.Errorf("failed to enqueue delete job: %w", err)
+	}
+
+	return job, nil
+}
+
+// RunRetentionEvaluationForSource evaluates retention policy for a specific source
+// and enqueues delete jobs for snapshots that should be removed
+func (s *Service) RunRetentionEvaluationForSource(ctx context.Context, sourceID string) (*types.RetentionEvaluationResult, error) {
+	// Get schedule for this source
+	schedule, err := s.repo.GetScheduleForSource(ctx, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schedule: %w", err)
+	}
+
+	// Parse retention policy
+	var policy types.RetentionPolicy
+	if len(schedule.RetentionPolicy) > 0 {
+		if err := json.Unmarshal(schedule.RetentionPolicy, &policy); err != nil {
+			return nil, fmt.Errorf("failed to parse retention policy: %w", err)
+		}
+	} else {
+		// Use default policy if none is set
+		policy = types.DefaultRetentionPolicy()
+	}
+
+	// Evaluate policy
+	result, err := s.EvaluateRetentionPolicy(ctx, schedule.TenantID, sourceID, policy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to evaluate retention policy: %w", err)
+	}
+
+	// Enqueue delete jobs for snapshots to delete
+	for _, snapshotID := range result.SnapshotsToDelete {
+		_, err := s.EnqueueDeleteJob(ctx, snapshotID)
+		if err != nil {
+			// Log error but continue with other snapshots
+			// TODO: Add proper logging
+			_ = err
+		}
+	}
+
+	return result, nil
+}
+
+// RunRetentionEvaluationForAllSources evaluates retention policies for all enabled schedules
+// and enqueues delete jobs for snapshots that should be removed
+func (s *Service) RunRetentionEvaluationForAllSources(ctx context.Context) ([]*SourceRetentionResult, error) {
+	// Get all enabled schedules
+	schedules, err := s.repo.ListAllSchedules(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list schedules: %w", err)
+	}
+
+	var results []*SourceRetentionResult
+
+	for _, schedule := range schedules {
+		result, err := s.RunRetentionEvaluationForSource(ctx, schedule.SourceID)
+		if err != nil {
+			results = append(results, &SourceRetentionResult{
+				SourceID: schedule.SourceID,
+				Error:    err.Error(),
+			})
+			continue
+		}
+
+		results = append(results, &SourceRetentionResult{
+			SourceID:          schedule.SourceID,
+			EvaluationResult:  result,
+			JobsEnqueued:      len(result.SnapshotsToDelete),
+		})
+	}
+
+	return results, nil
+}
+
+// SourceRetentionResult represents the result of running retention evaluation for a source
+type SourceRetentionResult struct {
+	SourceID         string                              `json:"source_id"`
+	EvaluationResult *types.RetentionEvaluationResult    `json:"evaluation_result,omitempty"`
+	JobsEnqueued     int                                 `json:"jobs_enqueued"`
+	Error            string                              `json:"error,omitempty"`
+}
+
+// Schedule management
+
+// CreateScheduleRequest is the request to create a schedule
+type CreateScheduleRequest struct {
+	TenantID         string             `json:"tenant_id"`
+	SourceID         string             `json:"source_id"`
+	Cron             *string            `json:"cron,omitempty"`
+	IntervalMinutes  *int               `json:"interval_minutes,omitempty"`
+	Timezone         string             `json:"timezone,omitempty"` // Default "UTC"
+	RetentionPolicy  types.RetentionPolicy `json:"retention_policy"`
+}
+
+// CreateSchedule creates a new schedule for a source
+func (s *Service) CreateSchedule(ctx context.Context, req CreateScheduleRequest) (*repository.Schedule, error) {
+	// Validate source exists and belongs to tenant
+	source, err := s.repo.GetSource(ctx, req.SourceID)
+	if err != nil {
+		return nil, fmt.Errorf("source not found: %w", err)
+	}
+
+	if source.TenantID != req.TenantID {
+		return nil, fmt.Errorf("source does not belong to tenant")
+	}
+
+	// Validate schedule parameters
+	if req.Cron == nil && req.IntervalMinutes == nil {
+		return nil, fmt.Errorf("either cron or interval_minutes must be specified")
+	}
+
+	if req.Cron != nil && req.IntervalMinutes != nil {
+		return nil, fmt.Errorf("cannot specify both cron and interval_minutes")
+	}
+
+	timezone := req.Timezone
+	if timezone == "" {
+		timezone = "UTC"
+	}
+
+	// Marshal retention policy to JSONB
+	retentionPolicyJSON, err := json.Marshal(req.RetentionPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal retention policy: %w", err)
+	}
+
+	// Create schedule
+	schedule, err := s.repo.CreateSchedule(ctx, req.TenantID, req.SourceID, req.Cron, req.IntervalMinutes, timezone, retentionPolicyJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create schedule: %w", err)
+	}
+
+	return schedule, nil
+}
+
+// UpdateScheduleRequest is the request to update a schedule
+type UpdateScheduleRequest struct {
+	Cron            *string            `json:"cron,omitempty"`
+	IntervalMinutes *int               `json:"interval_minutes,omitempty"`
+	Timezone        *string            `json:"timezone,omitempty"`
+	Status          *string            `json:"status,omitempty"` // "enabled" or "disabled"
+	RetentionPolicy  *types.RetentionPolicy `json:"retention_policy,omitempty"`
+}
+
+// UpdateSchedule updates an existing schedule
+func (s *Service) UpdateSchedule(ctx context.Context, scheduleID string, req UpdateScheduleRequest) (*repository.Schedule, error) {
+	// Get existing schedule to verify it exists
+	existing, err := s.repo.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule not found: %w", err)
+	}
+
+	// Prepare values for update (use existing values if not provided)
+	cron := req.Cron
+	if cron == nil {
+		cron = existing.Cron
+	}
+
+	intervalMinutes := req.IntervalMinutes
+	if intervalMinutes == nil {
+		intervalMinutes = existing.IntervalMinutes
+	}
+
+	timezone := existing.Timezone
+	if req.Timezone != nil && *req.Timezone != "" {
+		timezone = *req.Timezone
+	}
+
+	status := existing.Status
+	if req.Status != nil {
+		status = *req.Status
+	}
+
+	// Marshal retention policy
+	var retentionPolicyJSON json.RawMessage
+	if req.RetentionPolicy != nil {
+		retentionPolicyJSON, err = json.Marshal(req.RetentionPolicy)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal retention policy: %w", err)
+		}
+	} else {
+		retentionPolicyJSON = existing.RetentionPolicy
+	}
+
+	// Update schedule
+	schedule, err := s.repo.UpdateSchedule(ctx, scheduleID, cron, intervalMinutes, timezone, status, retentionPolicyJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update schedule: %w", err)
+	}
+
+	return schedule, nil
+}
+
+// GetSchedule retrieves a schedule by ID
+func (s *Service) GetSchedule(ctx context.Context, scheduleID string) (*repository.Schedule, error) {
+	schedule, err := s.repo.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schedule: %w", err)
+	}
+
+	return schedule, nil
+}
+
+// GetScheduleForSource retrieves the schedule for a specific source
+func (s *Service) GetScheduleForSource(ctx context.Context, sourceID string) (*repository.Schedule, error) {
+	schedule, err := s.repo.GetScheduleForSource(ctx, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get schedule for source: %w", err)
+	}
+
+	return schedule, nil
+}
+
+// ListSchedules retrieves all schedules for a tenant
+func (s *Service) ListSchedules(ctx context.Context, tenantID string) ([]*repository.Schedule, error) {
+	schedules, err := s.repo.ListSchedulesByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list schedules: %w", err)
+	}
+
+	return schedules, nil
+}
+
+// UpdateSourceRetentionPolicyRequest is the request to update only the retention policy
+type UpdateSourceRetentionPolicyRequest struct {
+	RetentionPolicy types.RetentionPolicy `json:"retention_policy"`
+}
+
+// UpdateSourceRetentionPolicy updates the retention policy for a source's schedule
+func (s *Service) UpdateSourceRetentionPolicy(ctx context.Context, sourceID string, req UpdateSourceRetentionPolicyRequest) (*repository.Schedule, error) {
+	// Get existing schedule for the source
+	schedule, err := s.repo.GetScheduleForSource(ctx, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("schedule not found for source: %w", err)
+	}
+
+	// Marshal new retention policy
+	retentionPolicyJSON, err := json.Marshal(req.RetentionPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal retention policy: %w", err)
+	}
+
+	// Update only the retention policy
+	updated, err := s.repo.UpdateScheduleRetention(ctx, schedule.ID, retentionPolicyJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update retention policy: %w", err)
+	}
+
+	return updated, nil
 }
