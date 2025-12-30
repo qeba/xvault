@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useSourcesStore } from '@/stores/sources'
-import type { SourceType } from '@/types'
+import type { Source, SourceType } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
@@ -14,13 +14,22 @@ const sourcesStore = useSourcesStore()
 const searchQuery = ref('')
 const isLoading = ref(true)
 const showCreateDialog = ref(false)
+const showEditDialog = ref(false)
 const isCreating = ref(false)
+const isUpdating = ref(false)
 const createError = ref('')
+const editError = ref('')
+const editingSource = ref<Source | null>(null)
 
 const createSourceForm = ref({
   name: '',
   type: 'sftp' as SourceType,
   config: {} as Record<string, string>,
+})
+
+const updateSourceForm = ref({
+  name: '',
+  enabled: true,
 })
 
 const filteredSources = computed(() => {
@@ -44,6 +53,16 @@ async function openCreateDialog() {
   createError.value = ''
   createSourceForm.value = { name: '', type: 'sftp', config: {} }
   showCreateDialog.value = true
+}
+
+function openEditDialog(source: Source) {
+  editError.value = ''
+  editingSource.value = source
+  updateSourceForm.value = {
+    name: source.name,
+    enabled: source.enabled,
+  }
+  showEditDialog.value = true
 }
 
 async function handleCreateSource() {
@@ -80,8 +99,33 @@ async function handleCreateSource() {
   }
 }
 
-async function handleDeleteSource(id: string) {
-  if (!confirm('Are you sure you want to delete this source?')) return
+async function handleUpdateSource() {
+  if (!editingSource.value) return
+
+  editError.value = ''
+
+  if (!updateSourceForm.value.name) {
+    editError.value = 'Name is required'
+    return
+  }
+
+  isUpdating.value = true
+  try {
+    await sourcesStore.updateSource(editingSource.value.id, {
+      name: updateSourceForm.value.name,
+      enabled: updateSourceForm.value.enabled,
+    })
+    showEditDialog.value = false
+    editingSource.value = null
+  } catch (error: unknown) {
+    editError.value = error instanceof Error ? error.message : 'Failed to update source'
+  } finally {
+    isUpdating.value = false
+  }
+}
+
+async function handleDeleteSource(id: string, name: string) {
+  if (!confirm(`Are you sure you want to delete source "${name}"?`)) return
 
   try {
     await sourcesStore.deleteSource(id)
@@ -188,14 +232,23 @@ function formatDate(date: string): string {
                   <div class="text-sm text-muted-foreground">{{ formatDate(source.created_at) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class="text-destructive"
-                    @click="handleDeleteSource(source.id)"
-                  >
-                    Delete
-                  </Button>
+                  <div class="flex justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="openEditDialog(source)"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="text-destructive"
+                      @click="handleDeleteSource(source.id, source.name)"
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -297,6 +350,60 @@ function formatDate(date: string): string {
             </Button>
             <Button type="submit" :disabled="isCreating">
               {{ isCreating ? 'Creating...' : 'Create Source' }}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </Dialog>
+
+    <!-- Edit Source Dialog -->
+    <Dialog v-model:open="showEditDialog">
+      <div class="p-6">
+        <h2 class="text-lg font-semibold mb-4">Edit Source</h2>
+
+        <div v-if="editError" class="mb-4 p-3 text-sm text-destructive bg-destructive/10 rounded-md">
+          {{ editError }}
+        </div>
+
+        <form @submit.prevent="handleUpdateSource" class="space-y-4">
+          <div class="space-y-2">
+            <Label for="edit-name">Name</Label>
+            <Input
+              id="edit-name"
+              v-model="updateSourceForm.name"
+              type="text"
+              placeholder="Production Database"
+              required
+              :disabled="isUpdating"
+            />
+          </div>
+
+          <div class="flex items-center space-x-2">
+            <input
+              id="edit-enabled"
+              v-model="updateSourceForm.enabled"
+              type="checkbox"
+              :disabled="isUpdating"
+              class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <Label for="edit-enabled" class="cursor-pointer">Enabled</Label>
+          </div>
+
+          <p class="text-sm text-muted-foreground">
+            Note: To modify connection settings, delete and recreate the source.
+          </p>
+
+          <div class="flex justify-end gap-3 pt-4">
+            <Button
+              type="button"
+              variant="outline"
+              :disabled="isUpdating"
+              @click="showEditDialog = false"
+            >
+              Cancel
+            </Button>
+            <Button type="submit" :disabled="isUpdating">
+              {{ isUpdating ? 'Updating...' : 'Update Source' }}
             </Button>
           </div>
         </form>

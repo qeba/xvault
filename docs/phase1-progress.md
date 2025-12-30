@@ -514,7 +514,7 @@ server {
 
 ### Auth UI: ✅ 12/12 Complete (Milestone 3 DONE)
 
-### Admin Dashboard: 🚧 5/10 Complete (Milestone 4 IN PROGRESS)
+### Admin Dashboard: 🚧 7/10 Complete (Milestone 4 IN PROGRESS)
 
 ### User Dashboard: ⏸️ 0/12 Complete (DEFERRED)
 
@@ -522,8 +522,8 @@ server {
 
 ### Deployment: ✅ 7/7 Complete (Milestone 7 DONE)
 
-**Overall Progress**: 48/71 tasks (68%)
-**Admin Dashboard Progress**: 5/10 tasks (50%) - **IN PROGRESS**
+**Overall Progress**: 50/71 tasks (70%)
+**Admin Dashboard Progress**: 7/10 tasks (70%) - **IN PROGRESS**
 
 ---
 
@@ -567,13 +567,13 @@ server {
 - ✅ Admin API store with CRUD operations ([`admin.ts`](web/src/stores/admin.ts))
 - ✅ Backend admin endpoints for user/tenant management
 - ✅ Type definitions for all entities ([`types/index.ts`](web/src/types/index.ts))
+- ✅ **Full CRUD forms in admin views** - Create, Edit, Delete dialogs for Users, Sources, Schedules
 
 **Admin Dashboard - Remaining Tasks**:
-- ⏳ Full CRUD forms in admin views (currently list/detail views only)
 - ⏳ Worker monitoring page
 - ⏳ Audit log page
 - ⏳ Data tables with pagination
-- ⏳ Search/filter functionality
+- ⏳ Enhanced search/filter functionality
 
 ### ⏸️ Deferred (Milestone 5)
 

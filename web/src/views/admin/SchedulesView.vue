@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useSchedulesStore } from '@/stores/schedules'
 import { useSourcesStore } from '@/stores/sources'
+import type { Schedule } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
@@ -15,12 +16,21 @@ const sourcesStore = useSourcesStore()
 const searchQuery = ref('')
 const isLoading = ref(true)
 const showCreateDialog = ref(false)
+const showEditDialog = ref(false)
 const isCreating = ref(false)
+const isUpdating = ref(false)
 const createError = ref('')
+const editError = ref('')
+const editingSchedule = ref<Schedule | null>(null)
 
 const createScheduleForm = ref({
   source_id: '',
   schedule: '0 0 * * *', // cron format: daily at midnight
+})
+
+const updateScheduleForm = ref({
+  schedule: '0 0 * * *',
+  enabled: true,
 })
 
 onMounted(async () => {
@@ -40,6 +50,24 @@ async function openCreateDialog() {
   createError.value = ''
   createScheduleForm.value = { source_id: '', schedule: '0 0 * * *' }
   showCreateDialog.value = true
+}
+
+function openEditDialog(schedule: Schedule) {
+  editError.value = ''
+  editingSchedule.value = schedule
+  updateScheduleForm.value = {
+    schedule: schedule.schedule,
+    enabled: schedule.enabled,
+  }
+  showEditDialog.value = true
+}
+
+async function toggleScheduleEnabled(id: string, enabled: boolean) {
+  try {
+    await schedulesStore.updateSchedule(id, { enabled: !enabled })
+  } catch (error) {
+    console.error('Failed to toggle schedule:', error)
+  }
 }
 
 async function handleCreateSchedule() {
@@ -62,6 +90,31 @@ async function handleCreateSchedule() {
     createError.value = error instanceof Error ? error.message : 'Failed to create schedule'
   } finally {
     isCreating.value = false
+  }
+}
+
+async function handleUpdateSchedule() {
+  if (!editingSchedule.value) return
+
+  editError.value = ''
+
+  if (!updateScheduleForm.value.schedule) {
+    editError.value = 'Schedule is required'
+    return
+  }
+
+  isUpdating.value = true
+  try {
+    await schedulesStore.updateSchedule(editingSchedule.value.id, {
+      schedule: updateScheduleForm.value.schedule,
+      enabled: updateScheduleForm.value.enabled,
+    })
+    showEditDialog.value = false
+    editingSchedule.value = null
+  } catch (error: unknown) {
+    editError.value = error instanceof Error ? error.message : 'Failed to update schedule'
+  } finally {
+    isUpdating.value = false
   }
 }
 
@@ -155,29 +208,39 @@ function formatDate(date: string): string {
                   <div class="text-sm font-mono">{{ schedule.schedule }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <span
+                  <button
                     :class="[
-                      'px-2 py-1 text-xs rounded-full',
+                      'px-2 py-1 text-xs rounded-full cursor-pointer transition-colors',
                       schedule.enabled
-                        ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
-                        : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200'
+                        ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-800'
+                        : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700'
                     ]"
+                    @click="toggleScheduleEnabled(schedule.id, schedule.enabled)"
                   >
                     {{ schedule.enabled ? 'Enabled' : 'Disabled' }}
-                  </span>
+                  </button>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm text-muted-foreground">{{ formatDate(schedule.created_at) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    class="text-destructive"
-                    @click="handleDeleteSchedule(schedule.id)"
-                  >
-                    Delete
-                  </Button>
+                  <div class="flex justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="openEditDialog(schedule)"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="text-destructive"
+                      @click="handleDeleteSchedule(schedule.id)"
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -238,6 +301,59 @@ function formatDate(date: string): string {
             </Button>
             <Button type="submit" :disabled="isCreating">
               {{ isCreating ? 'Creating...' : 'Create Schedule' }}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </Dialog>
+
+    <!-- Edit Schedule Dialog -->
+    <Dialog v-model:open="showEditDialog">
+      <div class="p-6">
+        <h2 class="text-lg font-semibold mb-4">Edit Schedule</h2>
+
+        <div v-if="editError" class="mb-4 p-3 text-sm text-destructive bg-destructive/10 rounded-md">
+          {{ editError }}
+        </div>
+
+        <form @submit.prevent="handleUpdateSchedule" class="space-y-4">
+          <div class="space-y-2">
+            <Label for="edit-schedule">Schedule (Cron Format)</Label>
+            <Input
+              id="edit-schedule"
+              v-model="updateScheduleForm.schedule"
+              type="text"
+              placeholder="0 0 * * *"
+              required
+              :disabled="isUpdating"
+            />
+            <p class="text-xs text-muted-foreground">
+              Cron format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)
+            </p>
+          </div>
+
+          <div class="flex items-center space-x-2">
+            <input
+              id="edit-enabled"
+              v-model="updateScheduleForm.enabled"
+              type="checkbox"
+              :disabled="isUpdating"
+              class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+            />
+            <Label for="edit-enabled" class="cursor-pointer">Enabled</Label>
+          </div>
+
+          <div class="flex justify-end gap-3 pt-4">
+            <Button
+              type="button"
+              variant="outline"
+              :disabled="isUpdating"
+              @click="showEditDialog = false"
+            >
+              Cancel
+            </Button>
+            <Button type="submit" :disabled="isUpdating">
+              {{ isUpdating ? 'Updating...' : 'Update Schedule' }}
             </Button>
           </div>
         </form>

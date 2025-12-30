@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAdminStore } from '@/stores/admin'
+import type { User } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
@@ -15,13 +16,22 @@ const adminStore = useAdminStore()
 const searchQuery = ref('')
 const isLoading = ref(true)
 const showCreateDialog = ref(false)
+const showEditDialog = ref(false)
 const isCreating = ref(false)
+const isUpdating = ref(false)
 const createError = ref('')
+const editError = ref('')
+const editingUser = ref<User | null>(null)
 
 const createUserForm = ref({
   email: '',
   password: '',
   name: '',
+  role: 'member' as 'owner' | 'admin' | 'member',
+})
+
+const updateUserForm = ref({
+  email: '',
   role: 'member' as 'owner' | 'admin' | 'member',
 })
 
@@ -46,6 +56,16 @@ async function openCreateDialog() {
   createError.value = ''
   createUserForm.value = { email: '', password: '', name: '', role: 'member' }
   showCreateDialog.value = true
+}
+
+function openEditDialog(user: User) {
+  editError.value = ''
+  editingUser.value = user
+  updateUserForm.value = {
+    email: user.email,
+    role: user.role as 'owner' | 'admin' | 'member',
+  }
+  showEditDialog.value = true
 }
 
 async function handleCreateUser() {
@@ -74,6 +94,41 @@ async function handleCreateUser() {
     createError.value = error instanceof Error ? error.message : 'Failed to create user'
   } finally {
     isCreating.value = false
+  }
+}
+
+async function handleUpdateUser() {
+  if (!editingUser.value) return
+
+  editError.value = ''
+
+  if (!updateUserForm.value.email) {
+    editError.value = 'Email is required'
+    return
+  }
+
+  isUpdating.value = true
+  try {
+    await adminStore.updateUser(editingUser.value.id, {
+      email: updateUserForm.value.email,
+      role: updateUserForm.value.role,
+    })
+    showEditDialog.value = false
+    editingUser.value = null
+  } catch (error: unknown) {
+    editError.value = error instanceof Error ? error.message : 'Failed to update user'
+  } finally {
+    isUpdating.value = false
+  }
+}
+
+async function handleDeleteUser(id: string, email: string) {
+  if (!confirm(`Are you sure you want to delete user "${email}"?`)) return
+
+  try {
+    await adminStore.deleteUser(id)
+  } catch (error) {
+    console.error('Failed to delete user:', error)
   }
 }
 
@@ -171,13 +226,30 @@ function getRoleBadgeClass(role: string): string {
                   <div class="text-sm text-muted-foreground">{{ formatDate(user.created_at) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    @click="viewUser(user.id)"
-                  >
-                    View
-                  </Button>
+                  <div class="flex justify-end gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="openEditDialog(user)"
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="viewUser(user.id)"
+                    >
+                      View
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="text-destructive"
+                      @click="handleDeleteUser(user.id, user.email)"
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -257,6 +329,59 @@ function getRoleBadgeClass(role: string): string {
             </Button>
             <Button type="submit" :disabled="isCreating">
               {{ isCreating ? 'Creating...' : 'Create User' }}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </Dialog>
+
+    <!-- Edit User Dialog -->
+    <Dialog v-model:open="showEditDialog">
+      <div class="p-6">
+        <h2 class="text-lg font-semibold mb-4">Edit User</h2>
+
+        <div v-if="editError" class="mb-4 p-3 text-sm text-destructive bg-destructive/10 rounded-md">
+          {{ editError }}
+        </div>
+
+        <form @submit.prevent="handleUpdateUser" class="space-y-4">
+          <div class="space-y-2">
+            <Label for="edit-email">Email</Label>
+            <Input
+              id="edit-email"
+              v-model="updateUserForm.email"
+              type="email"
+              placeholder="user@example.com"
+              required
+              :disabled="isUpdating"
+            />
+          </div>
+
+          <div class="space-y-2">
+            <Label for="edit-role">Role</Label>
+            <select
+              id="edit-role"
+              v-model="updateUserForm.role"
+              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              :disabled="isUpdating"
+            >
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+              <option value="owner">Owner</option>
+            </select>
+          </div>
+
+          <div class="flex justify-end gap-3 pt-4">
+            <Button
+              type="button"
+              variant="outline"
+              :disabled="isUpdating"
+              @click="showEditDialog = false"
+            >
+              Cancel
+            </Button>
+            <Button type="submit" :disabled="isUpdating">
+              {{ isUpdating ? 'Updating...' : 'Update User' }}
             </Button>
           </div>
         </form>
