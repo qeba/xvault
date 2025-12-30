@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { cn } from '@/lib/utils'
+import { ref, watch } from 'vue'
 
 interface Props {
   open?: boolean
-  class?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -28,22 +26,15 @@ watch(internalOpen, (newVal) => {
 function close() {
   internalOpen.value = false
 }
-
-const computedClass = computed(() =>
-  cn(
-    'relative z-50',
-    props.class
-  )
-)
 </script>
 
 <template>
-  <div v-if="internalOpen" :class="computedClass">
-    <!-- Backdrop -->
-    <div class="fixed inset-0 bg-black/50" @click="close" />
+  <!-- Backdrop -->
+  <Teleport to="body">
+    <div v-if="internalOpen" class="fixed inset-0 z-50 bg-black/50" @click="close" />
 
     <!-- Dialog -->
-    <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div v-if="internalOpen" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
       <div
         class="relative bg-background rounded-lg shadow-lg w-full max-w-md max-h-[90vh] overflow-y-auto"
         role="dialog"
@@ -52,5 +43,5 @@ const computedClass = computed(() =>
         <slot :close="close" />
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>
