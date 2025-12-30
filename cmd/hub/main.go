@@ -188,11 +188,20 @@ func main() {
 	admin.Delete("/tenants/:id", h.HandleDeleteTenant)
 
 	// Source management (admin only)
+	admin.Post("/sources/test-connection", h.HandleTestConnection) // Must be before :id routes
 	admin.Get("/sources", h.HandleListSourcesAdmin)
 	admin.Get("/sources/:id", h.HandleGetSourceAdmin)
 	admin.Post("/sources", h.HandleCreateSourceAdmin)
 	admin.Put("/sources/:id", h.HandleUpdateSourceAdmin)
 	admin.Delete("/sources/:id", h.HandleDeleteSourceAdmin)
+	admin.Post("/sources/:id/backup", h.HandleTriggerBackupAdmin)
+
+	// Schedule management (admin only)
+	admin.Get("/schedules", h.HandleListSchedulesAdmin)
+	admin.Get("/schedules/:id", h.HandleGetScheduleAdmin)
+	admin.Post("/schedules", h.HandleCreateScheduleAdmin)
+	admin.Put("/schedules/:id", h.HandleUpdateScheduleAdmin)
+	admin.Delete("/schedules/:id", h.HandleDeleteScheduleAdmin)
 
 	// Internal/Worker routes
 	internal := app.Group("/internal")

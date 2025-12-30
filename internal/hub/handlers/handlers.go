@@ -1120,3 +1120,155 @@ func (h *Handlers) HandleDeleteSourceAdmin(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
+
+// HandleTestConnection handles POST /api/v1/admin/sources/test-connection
+// Tests connectivity to a source before creating it
+func (h *Handlers) HandleTestConnection(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(15 * time.Second)
+	defer cancel()
+
+	var req service.TestConnectionRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.Type == "" || req.Host == "" || req.Port == 0 || req.Username == "" || req.Credential == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("type, host, port, username, and credential are required"), "Validation failed")
+	}
+
+	result, err := h.service.TestConnection(ctx, req)
+	if err != nil {
+		log.Printf("failed to test connection: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to test connection")
+	}
+
+	return c.JSON(result)
+}
+
+// HandleTriggerBackupAdmin handles POST /api/v1/admin/sources/:id/backup
+// Triggers a manual backup for a source (admin only)
+func (h *Handlers) HandleTriggerBackupAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	job, err := h.service.TriggerBackupAdmin(ctx, id)
+	if err != nil {
+		log.Printf("failed to trigger backup: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to trigger backup")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"message": "Backup job created",
+		"job":     job,
+	})
+}
+
+// Admin / Schedule handlers
+
+// HandleListSchedulesAdmin handles GET /api/v1/admin/schedules
+// Returns all schedules across all tenants (admin only)
+func (h *Handlers) HandleListSchedulesAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	schedules, err := h.service.ListAllSchedulesAdmin(ctx)
+	if err != nil {
+		log.Printf("failed to list all schedules: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list schedules")
+	}
+
+	return c.JSON(fiber.Map{"schedules": schedules})
+}
+
+// HandleGetScheduleAdmin handles GET /api/v1/admin/schedules/:id
+// Returns a specific schedule (admin only)
+func (h *Handlers) HandleGetScheduleAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	schedule, err := h.service.GetSchedule(ctx, id)
+	if err != nil {
+		log.Printf("failed to get schedule: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Schedule not found")
+	}
+
+	return c.JSON(schedule)
+}
+
+// HandleCreateScheduleAdmin handles POST /api/v1/admin/schedules
+// Creates a new schedule for a source (admin only)
+func (h *Handlers) HandleCreateScheduleAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	var req service.CreateScheduleRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.SourceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("source_id is required"), "Validation failed")
+	}
+
+	schedule, err := h.service.CreateScheduleAdmin(ctx, req)
+	if err != nil {
+		log.Printf("failed to create schedule: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create schedule")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(schedule)
+}
+
+// HandleUpdateScheduleAdmin handles PUT /api/v1/admin/schedules/:id
+// Updates a schedule (admin only)
+func (h *Handlers) HandleUpdateScheduleAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	var req service.UpdateScheduleRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	schedule, err := h.service.UpdateSchedule(ctx, id, req)
+	if err != nil {
+		log.Printf("failed to update schedule: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update schedule")
+	}
+
+	return c.JSON(schedule)
+}
+
+// HandleDeleteScheduleAdmin handles DELETE /api/v1/admin/schedules/:id
+// Deletes a schedule (admin only)
+func (h *Handlers) HandleDeleteScheduleAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	if err := h.service.DeleteSchedule(ctx, id); err != nil {
+		log.Printf("failed to delete schedule: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete schedule")
+	}
+
+	return c.Status(fiber.StatusNoContent).Send(nil)
+}

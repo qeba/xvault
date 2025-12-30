@@ -1,43 +1,96 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useSchedulesStore } from '@/stores/schedules'
-import { useSourcesStore } from '@/stores/sources'
-import type { Schedule } from '@/types'
+import { ref, onMounted, computed } from 'vue'
+import { useAdminStore } from '@/stores/admin'
+import type { Schedule, AdminCreateScheduleRequest, AdminUpdateScheduleRequest } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
 import Input from '@/components/ui/input/Input.vue'
 import Label from '@/components/ui/label/Label.vue'
 import Dialog from '@/components/ui/dialog/Dialog.vue'
+import { Select, type SelectOption } from '@/components/ui/select'
 
-const schedulesStore = useSchedulesStore()
-const sourcesStore = useSourcesStore()
+const adminStore = useAdminStore()
 
 const searchQuery = ref('')
+const statusFilter = ref('')
 const isLoading = ref(true)
 const showCreateDialog = ref(false)
 const showEditDialog = ref(false)
+const showDeleteDialog = ref(false)
 const isCreating = ref(false)
 const isUpdating = ref(false)
+const isDeleting = ref(false)
 const createError = ref('')
 const editError = ref('')
+const deleteError = ref('')
 const editingSchedule = ref<Schedule | null>(null)
+const deletingSchedule = ref<Schedule | null>(null)
 
-const createScheduleForm = ref({
+const statusFilterOptions: SelectOption[] = [
+  { label: 'All Status', value: '' },
+  { label: 'Enabled', value: 'enabled' },
+  { label: 'Disabled', value: 'disabled' },
+]
+
+// Source options for select
+const sourceOptions = computed<SelectOption[]>(() => {
+  return adminStore.sources.map(source => ({
+    label: `${source.name} (${getTenantName(source.tenant_id)})`,
+    value: source.id,
+  }))
+})
+
+const createForm = ref({
   source_id: '',
-  schedule: '0 0 * * *', // cron format: daily at midnight
+  cron: '0 0 * * *',
+  timezone: 'UTC',
+  retention_mode: 'latest_n' as 'all' | 'latest_n' | 'within_duration',
+  keep_last_n: 7,
+  keep_within_duration: '30d',
 })
 
-const updateScheduleForm = ref({
-  schedule: '0 0 * * *',
-  enabled: true,
+const editForm = ref({
+  cron: '',
+  timezone: 'UTC',
+  status: 'enabled' as 'enabled' | 'disabled',
+  retention_mode: 'latest_n' as 'all' | 'latest_n' | 'within_duration',
+  keep_last_n: 7,
+  keep_within_duration: '30d',
 })
+
+// Computed
+const filteredSchedules = computed(() => {
+  let result = adminStore.schedules
+
+  if (searchQuery.value) {
+    const query = searchQuery.value.toLowerCase()
+    result = result.filter(s =>
+      s.id.toLowerCase().includes(query) ||
+      getSourceName(s.source_id).toLowerCase().includes(query) ||
+      getTenantName(s.tenant_id).toLowerCase().includes(query)
+    )
+  }
+
+  if (statusFilter.value) {
+    result = result.filter(s => s.status === statusFilter.value)
+  }
+
+  return result
+})
+
+const scheduleStats = computed(() => ({
+  total: adminStore.schedules.length,
+  enabled: adminStore.schedules.filter(s => s.status === 'enabled').length,
+  disabled: adminStore.schedules.filter(s => s.status === 'disabled').length,
+}))
 
 onMounted(async () => {
   try {
     await Promise.all([
-      schedulesStore.fetchSchedules(),
-      sourcesStore.fetchSources(),
+      adminStore.fetchSchedules(),
+      adminStore.fetchSources(),
+      adminStore.fetchTenants(),
     ])
   } catch (error) {
     console.error('Failed to load data:', error)
@@ -46,45 +99,108 @@ onMounted(async () => {
   }
 })
 
-async function openCreateDialog() {
+function getTenantName(tenantId: string): string {
+  const tenant = adminStore.getTenantById(tenantId)
+  return tenant?.name || tenantId.slice(0, 8) + '...'
+}
+
+function getSourceName(sourceId: string): string {
+  const source = adminStore.sources.find(s => s.id === sourceId)
+  return source?.name || sourceId.slice(0, 8) + '...'
+}
+
+function formatCron(schedule: Schedule): string {
+  if (schedule.cron) {
+    return schedule.cron
+  }
+  if (schedule.interval_minutes) {
+    return `Every ${schedule.interval_minutes} min`
+  }
+  return 'N/A'
+}
+
+function formatRetention(schedule: Schedule): string {
+  if (!schedule.retention_policy) return 'N/A'
+  const rp = schedule.retention_policy
+  switch (rp.mode) {
+    case 'all':
+      return 'Keep all'
+    case 'latest_n':
+      return `Keep last ${rp.keep_last_n}`
+    case 'within_duration':
+      return `Keep ${rp.keep_within_duration}`
+    default:
+      return 'N/A'
+  }
+}
+
+function formatDate(date: string): string {
+  return new Date(date).toLocaleDateString()
+}
+
+// Dialog handlers
+function openCreateDialog() {
   createError.value = ''
-  createScheduleForm.value = { source_id: '', schedule: '0 0 * * *' }
+  createForm.value = {
+    source_id: sourceOptions.value[0]?.value || '',
+    cron: '0 0 * * *',
+    timezone: 'UTC',
+    retention_mode: 'latest_n',
+    keep_last_n: 7,
+    keep_within_duration: '30d',
+  }
   showCreateDialog.value = true
 }
 
 function openEditDialog(schedule: Schedule) {
   editError.value = ''
   editingSchedule.value = schedule
-  updateScheduleForm.value = {
-    schedule: schedule.schedule,
-    enabled: schedule.enabled,
+  const rp = schedule.retention_policy || { mode: 'latest_n', keep_last_n: 7 }
+  editForm.value = {
+    cron: schedule.cron || '',
+    timezone: schedule.timezone || 'UTC',
+    status: schedule.status,
+    retention_mode: rp.mode,
+    keep_last_n: rp.keep_last_n || 7,
+    keep_within_duration: rp.keep_within_duration || '30d',
   }
   showEditDialog.value = true
 }
 
-async function toggleScheduleEnabled(id: string, enabled: boolean) {
-  try {
-    await schedulesStore.updateSchedule(id, { enabled: !enabled })
-  } catch (error) {
-    console.error('Failed to toggle schedule:', error)
-  }
+function openDeleteDialog(schedule: Schedule) {
+  deleteError.value = ''
+  deletingSchedule.value = schedule
+  showDeleteDialog.value = true
 }
 
-async function handleCreateSchedule() {
+// Form handlers
+async function handleCreate() {
   createError.value = ''
 
-  if (!createScheduleForm.value.source_id) {
-    createError.value = 'Source is required'
+  if (!createForm.value.source_id) {
+    createError.value = 'Please select a source'
+    return
+  }
+
+  if (!createForm.value.cron) {
+    createError.value = 'Cron expression is required'
     return
   }
 
   isCreating.value = true
   try {
-    await schedulesStore.createSchedule({
-      source_id: createScheduleForm.value.source_id,
-      schedule: createScheduleForm.value.schedule,
-      enabled: true,
-    })
+    const retentionPolicy = {
+      mode: createForm.value.retention_mode,
+      keep_last_n: createForm.value.retention_mode === 'latest_n' ? createForm.value.keep_last_n : undefined,
+      keep_within_duration: createForm.value.retention_mode === 'within_duration' ? createForm.value.keep_within_duration : undefined,
+    }
+
+    await adminStore.createSchedule({
+      source_id: createForm.value.source_id,
+      cron: createForm.value.cron,
+      timezone: createForm.value.timezone,
+      retention_policy: retentionPolicy,
+    } as AdminCreateScheduleRequest)
     showCreateDialog.value = false
   } catch (error: unknown) {
     createError.value = error instanceof Error ? error.message : 'Failed to create schedule'
@@ -93,22 +209,25 @@ async function handleCreateSchedule() {
   }
 }
 
-async function handleUpdateSchedule() {
+async function handleUpdate() {
   if (!editingSchedule.value) return
 
   editError.value = ''
-
-  if (!updateScheduleForm.value.schedule) {
-    editError.value = 'Schedule is required'
-    return
-  }
-
   isUpdating.value = true
+
   try {
-    await schedulesStore.updateSchedule(editingSchedule.value.id, {
-      schedule: updateScheduleForm.value.schedule,
-      enabled: updateScheduleForm.value.enabled,
-    })
+    const retentionPolicy = {
+      mode: editForm.value.retention_mode,
+      keep_last_n: editForm.value.retention_mode === 'latest_n' ? editForm.value.keep_last_n : undefined,
+      keep_within_duration: editForm.value.retention_mode === 'within_duration' ? editForm.value.keep_within_duration : undefined,
+    }
+
+    await adminStore.updateSchedule(editingSchedule.value.id, {
+      cron: editForm.value.cron || undefined,
+      timezone: editForm.value.timezone,
+      status: editForm.value.status,
+      retention_policy: retentionPolicy,
+    } as AdminUpdateScheduleRequest)
     showEditDialog.value = false
     editingSchedule.value = null
   } catch (error: unknown) {
@@ -118,23 +237,30 @@ async function handleUpdateSchedule() {
   }
 }
 
-async function handleDeleteSchedule(id: string) {
-  if (!confirm('Are you sure you want to delete this schedule?')) return
+async function handleDelete() {
+  if (!deletingSchedule.value) return
+
+  deleteError.value = ''
+  isDeleting.value = true
 
   try {
-    await schedulesStore.deleteSchedule(id)
-  } catch (error) {
-    console.error('Failed to delete schedule:', error)
+    await adminStore.deleteSchedule(deletingSchedule.value.id)
+    showDeleteDialog.value = false
+    deletingSchedule.value = null
+  } catch (error: unknown) {
+    deleteError.value = error instanceof Error ? error.message : 'Failed to delete schedule'
+  } finally {
+    isDeleting.value = false
   }
 }
 
-function getSourceName(sourceId: string): string {
-  const source = sourcesStore.sources.find(s => s.id === sourceId)
-  return source?.name || 'Unknown'
-}
-
-function formatDate(date: string): string {
-  return new Date(date).toLocaleString()
+async function toggleStatus(schedule: Schedule) {
+  try {
+    const newStatus = schedule.status === 'enabled' ? 'disabled' : 'enabled'
+    await adminStore.updateSchedule(schedule.id, { status: newStatus })
+  } catch (error) {
+    console.error('Failed to toggle schedule status:', error)
+  }
 }
 </script>
 
@@ -144,8 +270,36 @@ function formatDate(date: string): string {
     <div class="flex items-center justify-between">
       <div>
         <h1 class="text-3xl font-bold">Schedules</h1>
-        <p class="text-muted-foreground">Manage backup schedules</p>
+        <p class="text-muted-foreground">Manage backup schedules across all tenants</p>
       </div>
+      <Button @click="openCreateDialog">
+        <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+        </svg>
+        Add Schedule
+      </Button>
+    </div>
+
+    <!-- Stats cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <Card>
+        <CardContent class="pt-6">
+          <div class="text-2xl font-bold">{{ scheduleStats.total }}</div>
+          <div class="text-sm text-muted-foreground">Total Schedules</div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent class="pt-6">
+          <div class="text-2xl font-bold text-green-600">{{ scheduleStats.enabled }}</div>
+          <div class="text-sm text-muted-foreground">Enabled</div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent class="pt-6">
+          <div class="text-2xl font-bold text-gray-500">{{ scheduleStats.disabled }}</div>
+          <div class="text-sm text-muted-foreground">Disabled</div>
+        </CardContent>
+      </Card>
     </div>
 
     <!-- Filters and search -->
@@ -159,12 +313,7 @@ function formatDate(date: string): string {
               placeholder="Search schedules..."
             />
           </div>
-          <Button @click="openCreateDialog">
-            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-            </svg>
-            Add Schedule
-          </Button>
+          <Select v-model="statusFilter" :options="statusFilterOptions" />
         </div>
       </CardContent>
     </Card>
@@ -175,16 +324,17 @@ function formatDate(date: string): string {
         <div v-if="isLoading" class="p-8 text-center text-muted-foreground">
           Loading schedules...
         </div>
-        <div v-else-if="schedulesStore.schedules.length === 0" class="p-8 text-center text-muted-foreground">
+        <div v-else-if="filteredSchedules.length === 0" class="p-8 text-center text-muted-foreground">
           No schedules found. Create your first schedule to get started.
         </div>
         <div v-else class="overflow-x-auto">
           <table class="w-full">
             <thead class="border-b bg-muted/50">
               <tr>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">ID</th>
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Source</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Schedule (Cron)</th>
+                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Tenant</th>
+                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Schedule</th>
+                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Retention</th>
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Status</th>
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Created</th>
                 <th class="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider">Actions</th>
@@ -192,32 +342,34 @@ function formatDate(date: string): string {
             </thead>
             <tbody class="divide-y">
               <tr
-                v-for="schedule in schedulesStore.schedules.filter(s =>
-                  !searchQuery || s.id.includes(searchQuery) || s.source_id.includes(searchQuery)
-                )"
+                v-for="schedule in filteredSchedules"
                 :key="schedule.id"
                 class="hover:bg-muted/50 transition-colors"
               >
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm font-mono text-xs">{{ schedule.id.slice(0, 8) }}...</div>
+                  <div class="font-medium">{{ getSourceName(schedule.source_id) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm">{{ getSourceName(schedule.source_id) }}</div>
+                  <div class="text-sm text-muted-foreground">{{ getTenantName(schedule.tenant_id) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm font-mono">{{ schedule.schedule }}</div>
+                  <div class="text-sm font-mono">{{ formatCron(schedule) }}</div>
+                  <div class="text-xs text-muted-foreground">{{ schedule.timezone }}</div>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                  <div class="text-sm">{{ formatRetention(schedule) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <button
                     :class="[
                       'px-2 py-1 text-xs rounded-full cursor-pointer transition-colors',
-                      schedule.enabled
+                      schedule.status === 'enabled'
                         ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 hover:bg-green-200 dark:hover:bg-green-800'
                         : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700'
                     ]"
-                    @click="toggleScheduleEnabled(schedule.id, schedule.enabled)"
+                    @click="toggleStatus(schedule)"
                   >
-                    {{ schedule.enabled ? 'Enabled' : 'Disabled' }}
+                    {{ schedule.status === 'enabled' ? 'Enabled' : 'Disabled' }}
                   </button>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
@@ -225,18 +377,14 @@ function formatDate(date: string): string {
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
                   <div class="flex justify-end gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      @click="openEditDialog(schedule)"
-                    >
+                    <Button variant="ghost" size="sm" @click="openEditDialog(schedule)">
                       Edit
                     </Button>
                     <Button
                       variant="ghost"
                       size="sm"
-                      class="text-destructive"
-                      @click="handleDeleteSchedule(schedule.id)"
+                      class="text-destructive hover:text-destructive"
+                      @click="openDeleteDialog(schedule)"
                     >
                       Delete
                     </Button>
@@ -258,45 +406,99 @@ function formatDate(date: string): string {
           {{ createError }}
         </div>
 
-        <form @submit.prevent="handleCreateSchedule" class="space-y-4">
+        <form @submit.prevent="handleCreate" class="space-y-4">
+          <!-- Source Selection -->
           <div class="space-y-2">
-            <Label for="create-source">Source</Label>
-            <select
-              id="create-source"
-              v-model="createScheduleForm.source_id"
-              class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              required
-              :disabled="isCreating"
-            >
-              <option value="">Select a source</option>
-              <option v-for="source in sourcesStore.sources" :key="source.id" :value="source.id">
-                {{ source.name }}
-              </option>
-            </select>
+            <Label>Source</Label>
+            <Select v-model="createForm.source_id" :options="sourceOptions" :disabled="isCreating" />
           </div>
 
+          <!-- Cron Expression -->
           <div class="space-y-2">
-            <Label for="create-schedule">Schedule (Cron Format)</Label>
+            <Label for="create-cron">Cron Expression</Label>
             <Input
-              id="create-schedule"
-              v-model="createScheduleForm.schedule"
-              type="text"
+              id="create-cron"
+              v-model="createForm.cron"
               placeholder="0 0 * * *"
-              required
               :disabled="isCreating"
             />
             <p class="text-xs text-muted-foreground">
-              Cron format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)
+              Format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)
             </p>
           </div>
 
-          <div class="flex justify-end gap-3 pt-4">
-            <Button
-              type="button"
-              variant="outline"
+          <!-- Timezone -->
+          <div class="space-y-2">
+            <Label for="create-timezone">Timezone</Label>
+            <Input
+              id="create-timezone"
+              v-model="createForm.timezone"
+              placeholder="UTC"
               :disabled="isCreating"
-              @click="showCreateDialog = false"
-            >
+            />
+          </div>
+
+          <!-- Retention Policy -->
+          <div class="border-t pt-4 mt-4">
+            <h3 class="font-medium mb-3">Retention Policy</h3>
+
+            <div class="space-y-3">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="createForm.retention_mode"
+                  value="all"
+                  class="h-4 w-4"
+                  :disabled="isCreating"
+                />
+                <span>Keep all snapshots</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="createForm.retention_mode"
+                  value="latest_n"
+                  class="h-4 w-4"
+                  :disabled="isCreating"
+                />
+                <span>Keep last N snapshots</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="createForm.retention_mode"
+                  value="within_duration"
+                  class="h-4 w-4"
+                  :disabled="isCreating"
+                />
+                <span>Keep snapshots within duration</span>
+              </label>
+            </div>
+
+            <div v-if="createForm.retention_mode === 'latest_n'" class="mt-3">
+              <Label for="create-keep-n">Number of snapshots to keep</Label>
+              <Input
+                id="create-keep-n"
+                v-model.number="createForm.keep_last_n"
+                type="number"
+                min="1"
+                :disabled="isCreating"
+              />
+            </div>
+
+            <div v-if="createForm.retention_mode === 'within_duration'" class="mt-3">
+              <Label for="create-duration">Duration (e.g., 30d, 7d, 24h)</Label>
+              <Input
+                id="create-duration"
+                v-model="createForm.keep_within_duration"
+                placeholder="30d"
+                :disabled="isCreating"
+              />
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-3 pt-4">
+            <Button type="button" variant="outline" :disabled="isCreating" @click="showCreateDialog = false">
               Cancel
             </Button>
             <Button type="submit" :disabled="isCreating">
@@ -316,40 +518,123 @@ function formatDate(date: string): string {
           {{ editError }}
         </div>
 
-        <form @submit.prevent="handleUpdateSchedule" class="space-y-4">
-          <div class="space-y-2">
-            <Label for="edit-schedule">Schedule (Cron Format)</Label>
-            <Input
-              id="edit-schedule"
-              v-model="updateScheduleForm.schedule"
-              type="text"
-              placeholder="0 0 * * *"
-              required
-              :disabled="isUpdating"
-            />
-            <p class="text-xs text-muted-foreground">
-              Cron format: minute hour day month weekday (e.g., "0 0 * * *" for daily at midnight)
-            </p>
+        <form v-if="editingSchedule" @submit.prevent="handleUpdate" class="space-y-4">
+          <!-- Schedule Info (read-only) -->
+          <div class="p-3 bg-muted/50 rounded-md text-sm">
+            <div><strong>Source:</strong> {{ getSourceName(editingSchedule.source_id) }}</div>
+            <div><strong>Tenant:</strong> {{ getTenantName(editingSchedule.tenant_id) }}</div>
           </div>
 
-          <div class="flex items-center space-x-2">
-            <input
-              id="edit-enabled"
-              v-model="updateScheduleForm.enabled"
-              type="checkbox"
+          <!-- Status -->
+          <div class="space-y-2">
+            <Label>Status</Label>
+            <div class="flex gap-4">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="editForm.status"
+                  value="enabled"
+                  class="h-4 w-4"
+                  :disabled="isUpdating"
+                />
+                <span>Enabled</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="editForm.status"
+                  value="disabled"
+                  class="h-4 w-4"
+                  :disabled="isUpdating"
+                />
+                <span>Disabled</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Cron Expression -->
+          <div class="space-y-2">
+            <Label for="edit-cron">Cron Expression</Label>
+            <Input
+              id="edit-cron"
+              v-model="editForm.cron"
+              placeholder="0 0 * * *"
               :disabled="isUpdating"
-              class="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
             />
-            <Label for="edit-enabled" class="cursor-pointer">Enabled</Label>
+          </div>
+
+          <!-- Timezone -->
+          <div class="space-y-2">
+            <Label for="edit-timezone">Timezone</Label>
+            <Input
+              id="edit-timezone"
+              v-model="editForm.timezone"
+              placeholder="UTC"
+              :disabled="isUpdating"
+            />
+          </div>
+
+          <!-- Retention Policy -->
+          <div class="border-t pt-4 mt-4">
+            <h3 class="font-medium mb-3">Retention Policy</h3>
+
+            <div class="space-y-3">
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="editForm.retention_mode"
+                  value="all"
+                  class="h-4 w-4"
+                  :disabled="isUpdating"
+                />
+                <span>Keep all snapshots</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="editForm.retention_mode"
+                  value="latest_n"
+                  class="h-4 w-4"
+                  :disabled="isUpdating"
+                />
+                <span>Keep last N snapshots</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  v-model="editForm.retention_mode"
+                  value="within_duration"
+                  class="h-4 w-4"
+                  :disabled="isUpdating"
+                />
+                <span>Keep snapshots within duration</span>
+              </label>
+            </div>
+
+            <div v-if="editForm.retention_mode === 'latest_n'" class="mt-3">
+              <Label for="edit-keep-n">Number of snapshots to keep</Label>
+              <Input
+                id="edit-keep-n"
+                v-model.number="editForm.keep_last_n"
+                type="number"
+                min="1"
+                :disabled="isUpdating"
+              />
+            </div>
+
+            <div v-if="editForm.retention_mode === 'within_duration'" class="mt-3">
+              <Label for="edit-duration">Duration (e.g., 30d, 7d, 24h)</Label>
+              <Input
+                id="edit-duration"
+                v-model="editForm.keep_within_duration"
+                placeholder="30d"
+                :disabled="isUpdating"
+              />
+            </div>
           </div>
 
           <div class="flex justify-end gap-3 pt-4">
-            <Button
-              type="button"
-              variant="outline"
-              :disabled="isUpdating"
-              @click="showEditDialog = false"
-            >
+            <Button type="button" variant="outline" :disabled="isUpdating" @click="showEditDialog = false">
               Cancel
             </Button>
             <Button type="submit" :disabled="isUpdating">
@@ -357,6 +642,35 @@ function formatDate(date: string): string {
             </Button>
           </div>
         </form>
+      </div>
+    </Dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <Dialog v-model:open="showDeleteDialog">
+      <div class="p-6">
+        <h2 class="text-lg font-semibold mb-4">Delete Schedule</h2>
+
+        <div v-if="deleteError" class="mb-4 p-3 text-sm text-destructive bg-destructive/10 rounded-md">
+          {{ deleteError }}
+        </div>
+
+        <p class="mb-4">
+          Are you sure you want to delete the schedule for source
+          <strong>{{ deletingSchedule ? getSourceName(deletingSchedule.source_id) : '' }}</strong>?
+        </p>
+
+        <p class="text-sm text-muted-foreground mb-4">
+          This will stop future backups from running. Existing snapshots will not be affected.
+        </p>
+
+        <div class="flex justify-end gap-3">
+          <Button variant="outline" :disabled="isDeleting" @click="showDeleteDialog = false">
+            Cancel
+          </Button>
+          <Button variant="destructive" :disabled="isDeleting" @click="handleDelete">
+            {{ isDeleting ? 'Deleting...' : 'Delete Schedule' }}
+          </Button>
+        </div>
       </div>
     </Dialog>
   </div>

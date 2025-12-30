@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,7 +16,9 @@ import (
 	"xvault/pkg/crypto"
 	"xvault/pkg/types"
 
+	"github.com/pkg/sftp"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -1408,4 +1411,297 @@ func (s *Service) UpdateSourceAdmin(ctx context.Context, sourceID string, req Up
 // DeleteSource deletes a source (admin only)
 func (s *Service) DeleteSource(ctx context.Context, sourceID string) error {
 	return s.repo.DeleteSource(ctx, sourceID)
+}
+
+// ========== Connection Testing ==========
+
+// TestConnectionRequest is the request to test a source connection
+type TestConnectionRequest struct {
+	Type          string `json:"type"`               // ssh, sftp, ftp, mysql, postgresql
+	Host          string `json:"host"`               // Hostname or IP
+	Port          int    `json:"port"`               // Port number
+	Username      string `json:"username"`           // Username for connection
+	Credential    string `json:"credential"`         // Base64-encoded password or private key
+	UsePrivateKey bool   `json:"use_private_key"`    // True if credential is a private key
+	Database      string `json:"database,omitempty"` // Database name (for mysql/postgresql)
+}
+
+// TestConnectionResult is the result of a connection test
+type TestConnectionResult struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Details string `json:"details,omitempty"`
+}
+
+// TestConnection tests connectivity to a source
+func (s *Service) TestConnection(ctx context.Context, req TestConnectionRequest) (*TestConnectionResult, error) {
+	// Decode credential from base64
+	credBytes, err := base64.StdEncoding.DecodeString(req.Credential)
+	if err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "Invalid credential encoding",
+			Details: err.Error(),
+		}, nil
+	}
+	credential := string(credBytes)
+
+	switch req.Type {
+	case "ssh", "sftp":
+		return s.testSSHConnection(ctx, req, credential)
+	case "ftp":
+		return s.testFTPConnection(ctx, req, credential)
+	case "mysql":
+		return s.testMySQLConnection(ctx, req, credential)
+	case "postgresql":
+		return s.testPostgreSQLConnection(ctx, req, credential)
+	default:
+		return &TestConnectionResult{
+			Success: false,
+			Message: "Unsupported source type",
+			Details: fmt.Sprintf("Type '%s' is not supported", req.Type),
+		}, nil
+	}
+}
+
+// testSSHConnection tests SSH/SFTP connectivity
+func (s *Service) testSSHConnection(ctx context.Context, req TestConnectionRequest, credential string) (*TestConnectionResult, error) {
+	// Build SSH config
+	sshConfig := &ssh.ClientConfig{
+		User:            req.Username,
+		Auth:            []ssh.AuthMethod{},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Make configurable
+		Timeout:         10 * time.Second,
+	}
+
+	// Add authentication method
+	if req.UsePrivateKey {
+		signer, err := ssh.ParsePrivateKey([]byte(credential))
+		if err != nil {
+			return &TestConnectionResult{
+				Success: false,
+				Message: "Failed to parse private key",
+				Details: err.Error(),
+			}, nil
+		}
+		sshConfig.Auth = append(sshConfig.Auth, ssh.PublicKeys(signer))
+	} else {
+		sshConfig.Auth = append(sshConfig.Auth, ssh.Password(credential))
+	}
+
+	// Attempt connection with context timeout
+	address := fmt.Sprintf("%s:%d", req.Host, req.Port)
+
+	// Use a dialer with timeout
+	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	if err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "Failed to connect to host",
+			Details: err.Error(),
+		}, nil
+	}
+	defer conn.Close()
+
+	// Create SSH connection
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, address, sshConfig)
+	if err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "SSH authentication failed",
+			Details: err.Error(),
+		}, nil
+	}
+
+	sshClient := ssh.NewClient(sshConn, chans, reqs)
+	defer sshClient.Close()
+
+	// For SFTP, also test SFTP subsystem
+	if req.Type == "sftp" {
+		sftpClient, err := sftp.NewClient(sshClient)
+		if err != nil {
+			return &TestConnectionResult{
+				Success: false,
+				Message: "SSH connected but SFTP subsystem failed",
+				Details: err.Error(),
+			}, nil
+		}
+		sftpClient.Close()
+
+		return &TestConnectionResult{
+			Success: true,
+			Message: "SFTP connection successful",
+			Details: fmt.Sprintf("Connected to %s as %s", address, req.Username),
+		}, nil
+	}
+
+	return &TestConnectionResult{
+		Success: true,
+		Message: "SSH connection successful",
+		Details: fmt.Sprintf("Connected to %s as %s", address, req.Username),
+	}, nil
+}
+
+// testFTPConnection tests FTP connectivity
+func (s *Service) testFTPConnection(ctx context.Context, req TestConnectionRequest, credential string) (*TestConnectionResult, error) {
+	// Simple TCP connection test for FTP
+	address := fmt.Sprintf("%s:%d", req.Host, req.Port)
+
+	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	if err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "Failed to connect to FTP server",
+			Details: err.Error(),
+		}, nil
+	}
+	conn.Close()
+
+	// Note: Full FTP authentication test would require an FTP library
+	// For now, we just verify the port is reachable
+	return &TestConnectionResult{
+		Success: true,
+		Message: "FTP port is reachable",
+		Details: fmt.Sprintf("Connected to %s (authentication not fully tested - install FTP client library for full test)", address),
+	}, nil
+}
+
+// testMySQLConnection tests MySQL connectivity
+func (s *Service) testMySQLConnection(ctx context.Context, req TestConnectionRequest, credential string) (*TestConnectionResult, error) {
+	// Simple TCP connection test for MySQL
+	address := fmt.Sprintf("%s:%d", req.Host, req.Port)
+
+	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	if err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "Failed to connect to MySQL server",
+			Details: err.Error(),
+		}, nil
+	}
+	conn.Close()
+
+	// Note: Full MySQL authentication test would require the MySQL driver
+	// For now, we verify the port is reachable
+	return &TestConnectionResult{
+		Success: true,
+		Message: "MySQL port is reachable",
+		Details: fmt.Sprintf("Connected to %s (authentication not fully tested - requires MySQL driver)", address),
+	}, nil
+}
+
+// testPostgreSQLConnection tests PostgreSQL connectivity
+func (s *Service) testPostgreSQLConnection(ctx context.Context, req TestConnectionRequest, credential string) (*TestConnectionResult, error) {
+	// We already have lib/pq, so we can do a full connection test
+	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable connect_timeout=10",
+		req.Host, req.Port, req.Username, credential, req.Database)
+
+	if req.Database == "" {
+		connStr = fmt.Sprintf("host=%s port=%d user=%s password=%s sslmode=disable connect_timeout=10",
+			req.Host, req.Port, req.Username, credential)
+	}
+
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "Failed to create PostgreSQL connection",
+			Details: err.Error(),
+		}, nil
+	}
+	defer db.Close()
+
+	// Test the connection
+	if err := db.PingContext(ctx); err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "PostgreSQL connection failed",
+			Details: err.Error(),
+		}, nil
+	}
+
+	return &TestConnectionResult{
+		Success: true,
+		Message: "PostgreSQL connection successful",
+		Details: fmt.Sprintf("Connected to %s:%d as %s", req.Host, req.Port, req.Username),
+	}, nil
+}
+
+// ========== Admin Backup Trigger ==========
+
+// TriggerBackupAdmin triggers a manual backup for a source (admin only)
+func (s *Service) TriggerBackupAdmin(ctx context.Context, sourceID string) (*repository.Job, error) {
+	// Get source to verify it exists
+	source, err := s.repo.GetSource(ctx, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("source not found: %w", err)
+	}
+
+	// Build job payload
+	payload := types.JobPayload{
+		SourceID:     sourceID,
+		CredentialID: source.CredentialID,
+		SourceConfig: source.Config,
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Create job record with high priority (manual trigger)
+	priority := 10
+
+	job, err := s.repo.CreateJob(ctx, source.TenantID, types.JobTypeBackup, &sourceID, payloadJSON, priority)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create job: %w", err)
+	}
+
+	// Enqueue to Redis
+	jobMsg := map[string]any{
+		"job_id":     job.ID,
+		"tenant_id":  source.TenantID,
+		"type":       "backup",
+		"priority":   priority,
+		"created_at": job.CreatedAt.Format(time.RFC3339),
+	}
+
+	jobMsgJSON, err := json.Marshal(jobMsg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal job message: %w", err)
+	}
+
+	if err := s.redis.LPush(ctx, JobQueueKey, jobMsgJSON).Err(); err != nil {
+		return nil, fmt.Errorf("failed to enqueue job: %w", err)
+	}
+
+	log.Printf("admin triggered backup for source %s, job_id=%s", sourceID, job.ID)
+	return job, nil
+}
+
+// ========== Admin Schedule Management ==========
+
+// ListAllSchedulesAdmin returns all schedules across all tenants (admin only)
+func (s *Service) ListAllSchedulesAdmin(ctx context.Context) ([]*repository.Schedule, error) {
+	return s.repo.ListAllSchedulesAdmin(ctx)
+}
+
+// CreateScheduleAdmin creates a schedule for any source (admin only)
+func (s *Service) CreateScheduleAdmin(ctx context.Context, req CreateScheduleRequest) (*repository.Schedule, error) {
+	// Validate source exists
+	source, err := s.repo.GetSource(ctx, req.SourceID)
+	if err != nil {
+		return nil, fmt.Errorf("source not found: %w", err)
+	}
+
+	// Use source's tenant_id
+	req.TenantID = source.TenantID
+
+	// Delegate to existing CreateSchedule
+	return s.CreateSchedule(ctx, req)
+}
+
+// DeleteSchedule deletes a schedule (admin only)
+func (s *Service) DeleteSchedule(ctx context.Context, scheduleID string) error {
+	return s.repo.DeleteSchedule(ctx, scheduleID)
 }

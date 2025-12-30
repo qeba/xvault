@@ -125,6 +125,23 @@ export interface AdminUpdateSourceRequest {
   credential?: string // Base64-encoded new credential (for rotation)
 }
 
+// Test Connection types
+export interface TestConnectionRequest {
+  type: SourceType
+  host: string
+  port: number
+  username: string
+  credential: string // Base64-encoded password or private key
+  use_private_key: boolean
+  database?: string // For mysql/postgresql
+}
+
+export interface TestConnectionResult {
+  success: boolean
+  message: string
+  details?: string
+}
+
 // Snapshot types
 export interface Snapshot {
   id: string
@@ -169,9 +186,15 @@ export interface Schedule {
   id: string
   tenant_id: string
   source_id: string
-  schedule: string // cron format
-  enabled: boolean
-  retention_policy_id: string | null
+  cron?: string | null
+  interval_minutes?: number | null
+  timezone: string
+  status: 'enabled' | 'disabled'
+  retention_policy: {
+    mode: 'all' | 'latest_n' | 'within_duration'
+    keep_last_n?: number
+    keep_within_duration?: string
+  }
   created_at: string
   updated_at: string
 }
@@ -187,6 +210,31 @@ export interface UpdateScheduleRequest {
   schedule?: string
   enabled?: boolean
   retention_policy_id?: string
+}
+
+// Admin Schedule Management types
+export interface AdminCreateScheduleRequest {
+  source_id: string
+  cron?: string
+  interval_minutes?: number
+  timezone?: string
+  retention_policy?: {
+    mode: 'all' | 'latest_n' | 'within_duration'
+    keep_last_n?: number
+    keep_within_duration?: string
+  }
+}
+
+export interface AdminUpdateScheduleRequest {
+  cron?: string
+  interval_minutes?: number
+  timezone?: string
+  status?: 'enabled' | 'disabled'
+  retention_policy?: {
+    mode: 'all' | 'latest_n' | 'within_duration'
+    keep_last_n?: number
+    keep_within_duration?: string
+  }
 }
 
 // Retention Policy types

@@ -22,9 +22,13 @@ const showDeleteDialog = ref(false)
 const isCreating = ref(false)
 const isUpdating = ref(false)
 const isDeleting = ref(false)
+const isTesting = ref(false)
+const isTriggering = ref(false)
 const createError = ref('')
 const editError = ref('')
 const deleteError = ref('')
+const testResult = ref<{ success: boolean; message: string; details?: string } | null>(null)
+const triggerResult = ref<{ success: boolean; message: string } | null>(null)
 const editingSource = ref<Source | null>(null)
 const deletingSource = ref<Source | null>(null)
 
@@ -178,6 +182,7 @@ function getSourceSummary(source: Source): string {
 // Dialog handlers
 function openCreateDialog() {
   createError.value = ''
+  testResult.value = null
   createForm.value = {
     tenant_id: tenantOptions.value[0]?.value || '',
     name: '',
@@ -197,6 +202,7 @@ function openCreateDialog() {
 
 function openEditDialog(source: Source) {
   editError.value = ''
+  testResult.value = null
   editingSource.value = source
   editForm.value = {
     name: source.name,
@@ -354,6 +360,71 @@ async function handleDelete() {
   }
 }
 
+// Test connection handler
+async function handleTestConnection(isEditMode: boolean = false) {
+  const form = isEditMode ? editForm.value : createForm.value
+  const type = isEditMode && editingSource.value ? editingSource.value.type : createForm.value.type
+  
+  testResult.value = null
+  
+  if (!form.host || !form.username || !form.credential) {
+    testResult.value = {
+      success: false,
+      message: 'Missing required fields',
+      details: 'Please fill in host, username, and password/private key before testing'
+    }
+    return
+  }
+
+  isTesting.value = true
+  
+  try {
+    const result = await adminStore.testConnection({
+      type: type,
+      host: form.host,
+      port: form.port,
+      username: form.username,
+      credential: btoa(form.credential),
+      use_private_key: form.credentialType === 'privateKey',
+      database: form.database || undefined,
+    })
+    testResult.value = result
+  } catch (error: unknown) {
+    testResult.value = {
+      success: false,
+      message: 'Test failed',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }
+  } finally {
+    isTesting.value = false
+  }
+}
+
+// Trigger backup handler
+async function handleTriggerBackup(source: Source) {
+  triggerResult.value = null
+  isTriggering.value = true
+  
+  try {
+    const result = await adminStore.triggerBackup(source.id)
+    triggerResult.value = {
+      success: true,
+      message: `Backup job created: ${result.job.id.slice(0, 8)}...`
+    }
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+      triggerResult.value = null
+    }, 5000)
+  } catch (error: unknown) {
+    triggerResult.value = {
+      success: false,
+      message: error instanceof Error ? error.message : 'Failed to trigger backup'
+    }
+  } finally {
+    isTriggering.value = false
+  }
+}
+
 // Watch type changes to set default ports
 function onTypeChange(type: SourceType) {
   createForm.value.type = type
@@ -389,6 +460,29 @@ function onTypeChange(type: SourceType) {
         </svg>
         Add Source
       </Button>
+    </div>
+
+    <!-- Backup Trigger Toast -->
+    <div 
+      v-if="triggerResult" 
+      :class="[
+        'fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 max-w-sm',
+        triggerResult.success 
+          ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 border border-green-200 dark:border-green-800' 
+          : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 border border-red-200 dark:border-red-800'
+      ]"
+    >
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="font-medium">{{ triggerResult.success ? 'Backup Started' : 'Backup Failed' }}</div>
+          <div class="text-sm opacity-80">{{ triggerResult.message }}</div>
+        </div>
+        <button @click="triggerResult = null" class="ml-4 p-1 hover:opacity-70">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Stats cards -->
@@ -506,6 +600,14 @@ function onTypeChange(type: SourceType) {
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
                   <div class="flex justify-end gap-2">
+                    <Button 
+                      variant="secondary" 
+                      size="sm" 
+                      :disabled="source.status !== 'active' || isTriggering"
+                      @click="handleTriggerBackup(source)"
+                    >
+                      {{ isTriggering ? '...' : 'Backup' }}
+                    </Button>
                     <Button variant="ghost" size="sm" @click="openEditDialog(source)">
                       Edit
                     </Button>
@@ -710,13 +812,25 @@ function onTypeChange(type: SourceType) {
                 }}
               </p>
             </div>
+
+            <!-- Test Connection Result -->
+            <div v-if="testResult" :class="[
+              'mt-4 p-3 rounded-md text-sm',
+              testResult.success ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+            ]">
+              <div class="font-medium">{{ testResult.message }}</div>
+              <div v-if="testResult.details" class="text-xs mt-1 opacity-80">{{ testResult.details }}</div>
+            </div>
           </div>
 
           <div class="flex justify-end gap-3 pt-4">
-            <Button type="button" variant="outline" :disabled="isCreating" @click="showCreateDialog = false">
+            <Button type="button" variant="outline" :disabled="isCreating || isTesting" @click="showCreateDialog = false">
               Cancel
             </Button>
-            <Button type="submit" :disabled="isCreating">
+            <Button type="button" variant="secondary" :disabled="isCreating || isTesting" @click="handleTestConnection(false)">
+              {{ isTesting ? 'Testing...' : 'Test Connection' }}
+            </Button>
+            <Button type="submit" :disabled="isCreating || isTesting">
               {{ isCreating ? 'Creating...' : 'Create Source' }}
             </Button>
           </div>
@@ -837,13 +951,31 @@ function onTypeChange(type: SourceType) {
                 :disabled="isUpdating"
               />
             </div>
+
+            <!-- Test Connection Result for Edit -->
+            <div v-if="testResult" :class="[
+              'mt-4 p-3 rounded-md text-sm',
+              testResult.success ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+            ]">
+              <div class="font-medium">{{ testResult.message }}</div>
+              <div v-if="testResult.details" class="text-xs mt-1 opacity-80">{{ testResult.details }}</div>
+            </div>
           </div>
 
           <div class="flex justify-end gap-3 pt-4">
-            <Button type="button" variant="outline" :disabled="isUpdating" @click="showEditDialog = false">
+            <Button type="button" variant="outline" :disabled="isUpdating || isTesting" @click="showEditDialog = false">
               Cancel
             </Button>
-            <Button type="submit" :disabled="isUpdating">
+            <Button 
+              v-if="editForm.credential" 
+              type="button" 
+              variant="secondary" 
+              :disabled="isUpdating || isTesting" 
+              @click="handleTestConnection(true)"
+            >
+              {{ isTesting ? 'Testing...' : 'Test Connection' }}
+            </Button>
+            <Button type="submit" :disabled="isUpdating || isTesting">
               {{ isUpdating ? 'Updating...' : 'Update Source' }}
             </Button>
           </div>

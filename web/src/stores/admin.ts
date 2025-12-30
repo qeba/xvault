@@ -1,12 +1,13 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/lib/api'
-import type { User, Tenant, Setting, Source, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest } from '@/types'
+import type { User, Tenant, Setting, Source, Schedule, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest, TestConnectionRequest, TestConnectionResult, AdminCreateScheduleRequest, AdminUpdateScheduleRequest } from '@/types'
 
 export const useAdminStore = defineStore('admin', () => {
   const users = ref<User[]>([])
   const tenants = ref<Tenant[]>([])
   const sources = ref<Source[]>([])
+  const schedules = ref<Schedule[]>([])
   const settings = ref<Setting[]>([])
   const isLoading = ref(false)
   const error = ref<string | null>(null)
@@ -317,11 +318,127 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  // Test connection
+  async function testConnection(data: TestConnectionRequest): Promise<TestConnectionResult> {
+    try {
+      const response = await api.post<TestConnectionResult>('/v1/admin/sources/test-connection', data)
+      return response.data
+    } catch (err) {
+      // Return a failure result instead of throwing
+      return {
+        success: false,
+        message: 'Connection test failed',
+        details: err instanceof Error ? err.message : 'Unknown error'
+      }
+    }
+  }
+
+  // Trigger backup
+  async function triggerBackup(sourceId: string): Promise<{ message: string; job: { id: string } }> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<{ message: string; job: { id: string } }>(`/v1/admin/sources/${sourceId}/backup`, {})
+      return response.data
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to trigger backup'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  // Schedules management (admin)
+  async function fetchSchedules(): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ schedules: Schedule[] }>('/v1/admin/schedules')
+      schedules.value = response.data.schedules || []
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch schedules'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchSchedule(id: string): Promise<Schedule> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<Schedule>(`/v1/admin/schedules/${id}`)
+      return response.data
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch schedule'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function createSchedule(data: AdminCreateScheduleRequest): Promise<Schedule> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<Schedule>('/v1/admin/schedules', data)
+      const newSchedule = response.data
+      schedules.value.push(newSchedule)
+      return newSchedule
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to create schedule'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function updateSchedule(id: string, data: AdminUpdateScheduleRequest): Promise<Schedule> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.put<Schedule>(`/v1/admin/schedules/${id}`, data)
+      const updatedSchedule = response.data
+
+      const index = schedules.value.findIndex((s) => s.id === id)
+      if (index !== -1) {
+        schedules.value[index] = updatedSchedule
+      }
+      return updatedSchedule
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to update schedule'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function deleteSchedule(id: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.delete(`/v1/admin/schedules/${id}`)
+      schedules.value = schedules.value.filter((s) => s.id !== id)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to delete schedule'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     // State
     users,
     tenants,
     sources,
+    schedules,
     settings,
     isLoading,
     error,
@@ -343,6 +460,14 @@ export const useAdminStore = defineStore('admin', () => {
     createSource,
     updateSource,
     deleteSource,
+    testConnection,
+    triggerBackup,
+    // Schedules
+    fetchSchedules,
+    fetchSchedule,
+    createSchedule,
+    updateSchedule,
+    deleteSchedule,
     // Settings
     fetchSettings,
     fetchSetting,

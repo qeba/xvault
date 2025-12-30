@@ -1388,3 +1388,42 @@ func (r *Repository) DeleteCredential(ctx context.Context, credentialID string) 
 	}
 	return nil
 }
+
+// ========== Admin Schedule Management ==========
+
+// ListAllSchedulesAdmin retrieves all schedules across all tenants (admin only)
+func (r *Repository) ListAllSchedulesAdmin(ctx context.Context) ([]*Schedule, error) {
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	          FROM schedules ORDER BY created_at DESC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list schedules: %w", err)
+	}
+	defer rows.Close()
+
+	var schedules []*Schedule
+	for rows.Next() {
+		var schedule Schedule
+		err := rows.Scan(
+			&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan schedule: %w", err)
+		}
+		schedules = append(schedules, &schedule)
+	}
+
+	return schedules, nil
+}
+
+// DeleteSchedule deletes a schedule
+func (r *Repository) DeleteSchedule(ctx context.Context, scheduleID string) error {
+	query := `DELETE FROM schedules WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, scheduleID)
+	if err != nil {
+		return fmt.Errorf("failed to delete schedule: %w", err)
+	}
+	return nil
+}
