@@ -1121,3 +1121,120 @@ func (s *Service) GetDownloadExpirationHours(ctx context.Context) (int, error) {
 func (s *Service) UpdateSnapshotDownloadInfo(ctx context.Context, snapshotID, downloadToken, downloadURL string, expiresAt time.Time) error {
 	return s.repo.UpdateSnapshotDownloadInfo(ctx, snapshotID, downloadToken, downloadURL, expiresAt)
 }
+
+// ========== Admin User Management ==========
+
+// CreateUserAdminRequest is the request to create a user as admin
+type CreateUserAdminRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Name     string `json:"name"`
+	Role     string `json:"role"` // "owner" | "admin" | "member"
+}
+
+// UpdateUserAdminRequest is the request to update a user as admin
+type UpdateUserAdminRequest struct {
+	Email string `json:"email,omitempty"`
+	Role  string `json:"role,omitempty"`
+}
+
+// ListUsers returns all users (admin only)
+func (s *Service) ListUsers(ctx context.Context) ([]repository.User, error) {
+	return s.repo.ListUsers(ctx)
+}
+
+// GetUser returns a specific user by ID (admin only)
+func (s *Service) GetUser(ctx context.Context, userID string) (*repository.User, error) {
+	return s.repo.GetUserByID(ctx, userID)
+}
+
+// CreateUserAdmin creates a new user with tenant as admin
+func (s *Service) CreateUserAdmin(ctx context.Context, req CreateUserAdminRequest) (*repository.User, error) {
+	// Validate role
+	if req.Role != "owner" && req.Role != "admin" && req.Role != "member" {
+		return nil, fmt.Errorf("invalid role: must be owner, admin, or member")
+	}
+
+	// Create tenant first
+	tenant, err := s.repo.CreateTenant(ctx, req.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tenant: %w", err)
+	}
+
+	// Generate encryption keypair for tenant
+	publicKey, privateKey, err := crypto.GenerateX25519KeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate encryption keys: %w", err)
+	}
+
+	// Encrypt private key with platform KEK
+	encryptedPrivateKey, err := crypto.EncryptForStorage([]byte(privateKey), s.encryptionKEK)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt private key: %w", err)
+	}
+
+	// Store tenant key
+	_, err = s.repo.CreateTenantKey(ctx, tenant.ID, "age-x25519", publicKey, encryptedPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to store tenant key: %w", err)
+	}
+
+	// Hash password
+	hashedPassword, err := HashPassword(req.Password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Create user
+	user, err := s.repo.CreateUser(ctx, tenant.ID, req.Email, hashedPassword, req.Role)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	return user, nil
+}
+
+// UpdateUserAdmin updates a user (admin only)
+func (s *Service) UpdateUserAdmin(ctx context.Context, userID string, req UpdateUserAdminRequest) (*repository.User, error) {
+	// Get existing user
+	user, err := s.repo.GetUserByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update fields if provided
+	if req.Email != "" && req.Email != user.Email {
+		if err := s.repo.UpdateUserEmail(ctx, userID, req.Email); err != nil {
+			return nil, fmt.Errorf("failed to update email: %w", err)
+		}
+	}
+
+	if req.Role != "" && req.Role != user.Role {
+		if req.Role != "owner" && req.Role != "admin" && req.Role != "member" {
+			return nil, fmt.Errorf("invalid role: must be owner, admin, or member")
+		}
+		if err := s.repo.UpdateUserRole(ctx, userID, req.Role); err != nil {
+			return nil, fmt.Errorf("failed to update role: %w", err)
+		}
+	}
+
+	// Fetch updated user
+	return s.repo.GetUserByID(ctx, userID)
+}
+
+// DeleteUser deletes a user (admin only)
+func (s *Service) DeleteUser(ctx context.Context, userID string) error {
+	return s.repo.DeleteUser(ctx, userID)
+}
+
+// ========== Admin Tenant Management ==========
+
+// ListTenants returns all tenants (admin only)
+func (s *Service) ListTenants(ctx context.Context) ([]repository.Tenant, error) {
+	return s.repo.ListTenants(ctx)
+}
+
+// GetTenant returns a specific tenant by ID (admin only)
+func (s *Service) GetTenant(ctx context.Context, tenantID string) (*repository.Tenant, error) {
+	return s.repo.GetTenantByID(ctx, tenantID)
+}

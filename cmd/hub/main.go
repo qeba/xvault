@@ -174,6 +174,17 @@ func main() {
 	admin.Get("/settings/:key", h.HandleGetSetting)
 	admin.Put("/settings/:key", h.HandleUpdateSetting)
 
+	// User management (admin only)
+	admin.Get("/users", h.HandleListUsers)
+	admin.Get("/users/:id", h.HandleGetUser)
+	admin.Post("/users", h.HandleCreateUser)
+	admin.Put("/users/:id", h.HandleUpdateUser)
+	admin.Delete("/users/:id", h.HandleDeleteUser)
+
+	// Tenant management (admin only)
+	admin.Get("/tenants", h.HandleListTenants)
+	admin.Get("/tenants/:id", h.HandleGetTenantAdmin)
+
 	// Internal/Worker routes
 	internal := app.Group("/internal")
 

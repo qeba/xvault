@@ -1114,3 +1114,105 @@ func (r *Repository) CleanupExpiredTokens(ctx context.Context) error {
 
 	return nil
 }
+
+// ==================== ADMIN USER MANAGEMENT ====================
+
+// ListUsers returns all users (admin only)
+func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
+	query := `SELECT id, tenant_id, email, password_hash, role, created_at, updated_at FROM users ORDER BY created_at DESC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		err := rows.Scan(
+			&user.ID, &user.TenantID, &user.Email, &user.PasswordHash, &user.Role, &user.CreatedAt, &user.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan user: %w", err)
+		}
+		users = append(users, user)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating users: %w", err)
+	}
+
+	return users, nil
+}
+
+// GetUserByID retrieves a user by ID (alias for GetUser for consistency)
+func (r *Repository) GetUserByID(ctx context.Context, userID string) (*User, error) {
+	return r.GetUser(ctx, userID)
+}
+
+// UpdateUserEmail updates a user's email
+func (r *Repository) UpdateUserEmail(ctx context.Context, userID, email string) error {
+	query := `UPDATE users SET email = $1, updated_at = $2 WHERE id = $3`
+	_, err := r.db.ExecContext(ctx, query, email, time.Now(), userID)
+	if err != nil {
+		return fmt.Errorf("failed to update user email: %w", err)
+	}
+	return nil
+}
+
+// UpdateUserRole updates a user's role
+func (r *Repository) UpdateUserRole(ctx context.Context, userID, role string) error {
+	query := `UPDATE users SET role = $1, updated_at = $2 WHERE id = $3`
+	_, err := r.db.ExecContext(ctx, query, role, time.Now(), userID)
+	if err != nil {
+		return fmt.Errorf("failed to update user role: %w", err)
+	}
+	return nil
+}
+
+// DeleteUser deletes a user
+func (r *Repository) DeleteUser(ctx context.Context, userID string) error {
+	query := `DELETE FROM users WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete user: %w", err)
+	}
+	return nil
+}
+
+// ==================== ADMIN TENANT MANAGEMENT ====================
+
+// ListTenants returns all tenants (admin only)
+func (r *Repository) ListTenants(ctx context.Context) ([]Tenant, error) {
+	query := `SELECT id, name, plan, created_at, updated_at FROM tenants ORDER BY created_at DESC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list tenants: %w", err)
+	}
+	defer rows.Close()
+
+	var tenants []Tenant
+	for rows.Next() {
+		var tenant Tenant
+		err := rows.Scan(
+			&tenant.ID, &tenant.Name, &tenant.Plan, &tenant.CreatedAt, &tenant.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan tenant: %w", err)
+		}
+		tenants = append(tenants, tenant)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tenants: %w", err)
+	}
+
+	return tenants, nil
+}
+
+// GetTenantByID retrieves a tenant by ID (alias for GetTenant for consistency)
+func (r *Repository) GetTenantByID(ctx context.Context, tenantID string) (*Tenant, error) {
+	return r.GetTenant(ctx, tenantID)
+}

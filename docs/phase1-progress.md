@@ -1,10 +1,24 @@
 # Phase 1: Frontend Dashboard & JWT Authentication
 
-**Last Updated:** 2025-12-29
+**Last Updated:** 2025-12-30
 
-**Status:** ⏳ **Planning Phase**
+**Status:** 🚧 **In Progress - Admin-First Approach**
 
-This document tracks the implementation progress of the xVault frontend dashboard and JWT authentication system.
+**IMPORTANT:** This phase prioritizes the **admin dashboard** with full CRUD control before building user-facing features.
+
+## Admin-First Priority
+
+The frontend is being built with an **admin-first approach** to ensure full platform control is working before adding user-facing features:
+
+1. ✅ **Backend JWT** - Complete authentication system
+2. 🔴 **Admin Dashboard** (CURRENT FOCUS)
+   - Add users to the platform
+   - Add sources for backups
+   - Create schedules for users
+   - Set retention policies
+   - Generate download links for backups
+3. ⏳ **User Dashboard** - Simplified view for end users
+4. ⏳ **Home/Marketing** - Placeholder only for now
 
 ---
 
@@ -259,11 +273,23 @@ type RefreshTokenClaims struct {
 
 ---
 
-### Milestone 4: Admin Dashboard
+### Milestone 4: Admin Dashboard 🔴 **PRIMARY FOCUS**
 
-**Goal**: Build admin dashboard for platform management
+**Goal**: Build admin dashboard for platform management with full CRUD control
 
 **Access**: Users with `role: admin` only
+
+**Priority**: 🔴 **HIGHEST** - This is the primary focus of Phase 1
+
+**Admin Capabilities Required**:
+- ✅ Add new users to the platform
+- ✅ Add sources for backups on behalf of users
+- ✅ Create schedules for users
+- ✅ Set retention policies per source
+- ✅ Generate download links for backups
+- ✅ View all snapshots across all tenants
+- ✅ Monitor workers and system health
+- ✅ Manage system settings
 
 | Task | Status | Notes |
 |------|--------|-------|
@@ -294,11 +320,15 @@ type RefreshTokenClaims struct {
 
 ---
 
-### Milestone 5: User Dashboard
+### Milestone 5: User Dashboard ⏳ **DEFERRED**
 
-**Goal**: Build user dashboard for backup management
+**Goal**: Build simplified user dashboard for backup management
 
 **Access**: All authenticated users
+
+**Status**: ⏳ **DEFERRED** - Will be completed after admin dashboard is fully functional
+
+**Note**: This milestone will be simplified initially. Admin needs to work perfectly before building user-facing features.
 
 | Task | Status | Notes |
 |------|--------|-------|
@@ -457,8 +487,22 @@ server {
 | GET | `/api/v1/schedules` | List schedules | Yes (JWT) |
 | POST | `/api/v1/schedules` | Create schedule | Yes (JWT) |
 | PUT | `/api/v1/schedules/:id` | Update schedule | Yes (JWT) |
+
+### Admin Endpoints (Admin Role Required)
+
+| Method | Endpoint | Description | Auth Required |
+|--------|----------|-------------|---------------|
+| GET | `/api/v1/admin/users` | List all users | Yes (JWT + admin role) |
+| GET | `/api/v1/admin/users/:id` | Get user by ID | Yes (JWT + admin role) |
+| POST | `/api/v1/admin/users` | Create new user + tenant | Yes (JWT + admin role) |
+| PUT | `/api/v1/admin/users/:id` | Update user | Yes (JWT + admin role) |
+| DELETE | `/api/v1/admin/users/:id` | Delete user | Yes (JWT + admin role) |
+| GET | `/api/v1/admin/tenants` | List all tenants | Yes (JWT + admin role) |
+| GET | `/api/v1/admin/tenants/:id` | Get tenant by ID | Yes (JWT + admin role) |
 | GET | `/api/v1/admin/settings` | List settings | Yes (JWT + admin role) |
 | PUT | `/api/v1/admin/settings/:key` | Update setting | Yes (JWT + admin role) |
+| POST | `/api/v1/admin/retention/run` | Run retention for all sources | Yes (JWT + admin role) |
+| POST | `/api/v1/admin/retention/run/:sourceId` | Run retention for source | Yes (JWT + admin role) |
 
 ---
 
@@ -466,19 +510,74 @@ server {
 
 ### Backend JWT: ✅ 12/12 Complete (Milestone 1 DONE)
 
-### Frontend Setup: ⏳ 0/12 Complete
+### Frontend Setup: ✅ 12/12 Complete (Milestone 2 DONE)
 
-### Auth UI: ⏳ 0/12 Complete
+### Auth UI: ✅ 12/12 Complete (Milestone 3 DONE)
 
-### Admin Dashboard: ⏳ 0/10 Complete
+### Admin Dashboard: 🚧 5/10 Complete (Milestone 4 IN PROGRESS)
 
-### User Dashboard: ⏳ 0/12 Complete
+### User Dashboard: ⏸️ 0/12 Complete (DEFERRED)
 
 ### Dark Mode: ⏳ 0/6 Complete
 
-### Deployment: ⏳ 0/7 Complete
+### Deployment: ✅ 7/7 Complete (Milestone 7 DONE)
 
-**Overall Progress**: 12/71 tasks (17%)
+**Overall Progress**: 48/71 tasks (68%)
+**Admin Dashboard Progress**: 5/10 tasks (50%) - **IN PROGRESS**
+
+---
+
+## Implementation Summary
+
+### ✅ Completed (Milestones 1-3, 7)
+
+**Backend JWT Authentication (Milestone 1)**:
+- Complete auth endpoints: register, login, refresh, logout, /me
+- JWT middleware for protected routes
+- Refresh token storage and management
+- Admin-only endpoints for user/tenant management
+
+**Frontend Project Setup (Milestone 2)**:
+- Vue 3 + Vite + TypeScript project in `/web`
+- Tailwind CSS v4 configured
+- shadcn-vue components (Button, Card, Input, Label, Dialog)
+- Pinia stores (auth, admin, sources, snapshots, schedules)
+- Vue Router with auth guards
+- Axios API client with token interceptors and auto-refresh
+
+**Authentication UI (Milestone 3)**:
+- Login and Register pages
+- Auth store with login/register/logout/fetchMe
+- API client with JWT token injection
+- Auto token refresh on 401 responses
+- Router guards for protected routes
+- Admin role checking
+
+**Deployment (Milestone 7)**:
+- Multi-stage Dockerfile ([`deploy/docker/web/Dockerfile`](deploy/docker/web/Dockerfile))
+- Nginx config with SPA fallback and API proxy ([`deploy/docker/web/nginx.conf`](deploy/docker/web/nginx.conf))
+- Docker Compose updated with frontend service
+- Development server with API proxy configured
+
+### 🚧 In Progress (Milestone 4)
+
+**Admin Dashboard - Completed**:
+- ✅ Admin layout with sidebar navigation ([`AdminLayout.vue`](web/src/components/layout/AdminLayout.vue))
+- ✅ Admin dashboard home with stats ([`DashboardView.vue`](web/src/views/admin/DashboardView.vue))
+- ✅ Admin API store with CRUD operations ([`admin.ts`](web/src/stores/admin.ts))
+- ✅ Backend admin endpoints for user/tenant management
+- ✅ Type definitions for all entities ([`types/index.ts`](web/src/types/index.ts))
+
+**Admin Dashboard - Remaining Tasks**:
+- ⏳ Full CRUD forms in admin views (currently list/detail views only)
+- ⏳ Worker monitoring page
+- ⏳ Audit log page
+- ⏳ Data tables with pagination
+- ⏳ Search/filter functionality
+
+### ⏸️ Deferred (Milestone 5)
+
+User dashboard is intentionally deferred until admin dashboard is fully functional.
 
 ---
 
@@ -495,10 +594,12 @@ go test ./internal/hub/...
 
 ### Frontend Development
 ```bash
+cd web
+
 # Install dependencies
 npm install
 
-# Run dev server
+# Run dev server (with API proxy to Hub on port 8080)
 npm run dev
 
 # Build for production
@@ -506,12 +607,6 @@ npm run build
 
 # Preview production build
 npm run preview
-
-# Type check
-npm run type-check
-
-# Lint
-npm run lint
 ```
 
 ---

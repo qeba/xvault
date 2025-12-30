@@ -1,0 +1,209 @@
+// User types
+export interface User {
+  id: string
+  tenant_id: string
+  email: string
+  role: 'owner' | 'admin' | 'member'
+  created_at: string
+  updated_at: string
+}
+
+// Tenant types
+export interface Tenant {
+  id: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+// Auth types
+export interface RegisterRequest {
+  name: string
+  email: string
+  password: string
+}
+
+export interface RegisterResponse {
+  user: User
+  tenant: Tenant
+  access_token: string
+  refresh_token: string
+  expires_at: string
+}
+
+export interface LoginRequest {
+  email: string
+  password: string
+}
+
+export interface LoginResponse {
+  user: User
+  tenant: Tenant
+  access_token: string
+  refresh_token: string
+  expires_at: string
+}
+
+export interface RefreshRequest {
+  refresh_token: string
+}
+
+export interface RefreshResponse {
+  access_token: string
+  refresh_token: string
+  expires_at: string
+}
+
+export interface AuthResponse {
+  user_id: string
+  tenant_id: string
+  email: string
+  role: string
+}
+
+// Source types
+export type SourceType = 'ssh' | 'sftp' | 'ftp' | 'mysql' | 'postgresql' | 'mongodb'
+
+export interface Source {
+  id: string
+  tenant_id: string
+  name: string
+  type: SourceType
+  config: Record<string, unknown>
+  enabled: boolean
+  retention_policy_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateSourceRequest {
+  name: string
+  type: SourceType
+  config: Record<string, unknown>
+  enabled?: boolean
+  retention_policy_id?: string
+}
+
+// Snapshot types
+export interface Snapshot {
+  id: string
+  tenant_id: string
+  source_id: string
+  status: 'pending' | 'completed' | 'failed'
+  size_bytes: number
+  file_count: number
+  storage_backend: string
+  worker_id: string
+  location: string
+  created_at: string
+  completed_at: string | null
+  manifest: Record<string, unknown> | null
+}
+
+// Job types
+export type JobStatus = 'pending' | 'claimed' | 'running' | 'completed' | 'failed'
+export type JobType = 'backup' | 'restore' | 'delete' | 'retention_eval'
+
+export interface Job {
+  id: string
+  tenant_id: string
+  source_id: string | null
+  type: JobType
+  status: JobStatus
+  target_worker_id: string | null
+  lease_expires_at: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  result: Record<string, unknown> | null
+}
+
+export interface EnqueueJobRequest {
+  source_id: string
+}
+
+// Schedule types
+export interface Schedule {
+  id: string
+  tenant_id: string
+  source_id: string
+  schedule: string // cron format
+  enabled: boolean
+  retention_policy_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateScheduleRequest {
+  source_id: string
+  schedule: string
+  enabled?: boolean
+  retention_policy_id?: string
+}
+
+export interface UpdateScheduleRequest {
+  schedule?: string
+  enabled?: boolean
+  retention_policy_id?: string
+}
+
+// Retention Policy types
+export type RetentionMode = 'all' | 'latest_n' | 'within_duration'
+
+export interface RetentionPolicy {
+  id: string
+  tenant_id: string
+  name: string
+  mode: RetentionMode
+  keep_last_n: number | null
+  keep_within_duration: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateRetentionPolicyRequest {
+  name: string
+  mode: RetentionMode
+  keep_last_n?: number
+  keep_within_duration?: string
+}
+
+export interface UpdateRetentionPolicyRequest {
+  name?: string
+  mode?: RetentionMode
+  keep_last_n?: number
+  keep_within_duration?: string
+}
+
+// Settings types
+export interface Setting {
+  key: string
+  value: string
+  description: string
+}
+
+export interface UpdateSettingRequest {
+  value: string
+}
+
+// Worker types
+export interface Worker {
+  id: string
+  status: 'active' | 'inactive'
+  last_heartbeat_at: string | null
+  capabilities: string[]
+}
+
+// Restore Job types
+export interface RestoreJob {
+  id: string
+  snapshot_id: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  download_token: string | null
+  download_expires_at: string | null
+  download_url: string | null
+  created_at: string
+  completed_at: string | null
+  error: string | null
+}

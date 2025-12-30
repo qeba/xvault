@@ -116,7 +116,8 @@ func OptionalJWTMiddleware(authService *service.AuthService) fiber.Handler {
 func RequireAdmin() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		role := c.Locals("role")
-		if role != "admin" {
+		// Allow both "admin" and "owner" roles for admin access
+		if role != "admin" && role != "owner" {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 				"error": "Admin access required",
 			})

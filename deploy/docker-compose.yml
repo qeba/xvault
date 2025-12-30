@@ -75,6 +75,16 @@ services:
       - xvault_worker_backups:${WORKER_STORAGE_BASE}:ro
       - xvault_restore_downloads:/var/lib/xvault/downloads
 
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/docker/web/Dockerfile
+    ports:
+      - "${WEB_PORT:-3000}:80"
+    depends_on:
+      hub:
+        condition: service_started
+
 volumes:
   xvault_postgres:
   xvault_worker_backups:

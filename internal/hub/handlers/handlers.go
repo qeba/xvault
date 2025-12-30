@@ -143,7 +143,7 @@ func (h *Handlers) HandleListSources(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list sources")
 	}
 
-	return c.JSON(sources)
+	return c.JSON(fiber.Map{"sources": sources})
 }
 
 // HandleGetSource handles GET /api/v1/sources/:id
@@ -626,7 +626,7 @@ func (h *Handlers) HandleListSchedules(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list schedules")
 	}
 
-	return c.JSON(schedules)
+	return c.JSON(fiber.Map{"schedules": schedules})
 }
 
 // Restore handlers
@@ -774,7 +774,7 @@ func (h *Handlers) HandleListSettings(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list settings")
 	}
 
-	return c.JSON(settings)
+	return c.JSON(fiber.Map{"settings": settings})
 }
 
 // HandleGetSetting handles GET /api/v1/admin/settings/:key
@@ -824,6 +824,152 @@ func (h *Handlers) HandleUpdateSetting(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(setting)
+}
+
+// Admin / User handlers
+
+// HandleListUsers handles GET /api/v1/admin/users
+// Returns all users (admin only)
+func (h *Handlers) HandleListUsers(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	users, err := h.service.ListUsers(ctx)
+	if err != nil {
+		log.Printf("failed to list users: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list users")
+	}
+
+	return c.JSON(fiber.Map{"users": users})
+}
+
+// HandleGetUser handles GET /api/v1/admin/users/:id
+// Returns a specific user (admin only)
+func (h *Handlers) HandleGetUser(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	user, err := h.service.GetUser(ctx, id)
+	if err != nil {
+		log.Printf("failed to get user: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "User not found")
+	}
+
+	return c.JSON(user)
+}
+
+// HandleCreateUser handles POST /api/v1/admin/users
+// Creates a new user with tenant (admin only)
+func (h *Handlers) HandleCreateUser(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	var req service.CreateUserAdminRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.Email == "" || req.Password == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("email and password are required"), "Validation failed")
+	}
+
+	if len(req.Password) < 8 {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("password must be at least 8 characters"), "Validation failed")
+	}
+
+	user, err := h.service.CreateUserAdmin(ctx, req)
+	if err != nil {
+		log.Printf("failed to create user: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create user")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(user)
+}
+
+// HandleUpdateUser handles PUT /api/v1/admin/users/:id
+// Updates a user (admin only)
+func (h *Handlers) HandleUpdateUser(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	var req service.UpdateUserAdminRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	user, err := h.service.UpdateUserAdmin(ctx, id, req)
+	if err != nil {
+		log.Printf("failed to update user: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update user")
+	}
+
+	return c.JSON(user)
+}
+
+// HandleDeleteUser handles DELETE /api/v1/admin/users/:id
+// Deletes a user (admin only)
+func (h *Handlers) HandleDeleteUser(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	if err := h.service.DeleteUser(ctx, id); err != nil {
+		log.Printf("failed to delete user: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete user")
+	}
+
+	return c.Status(fiber.StatusNoContent).Send(nil)
+}
+
+// Admin / Tenant handlers
+
+// HandleListTenants handles GET /api/v1/admin/tenants
+// Returns all tenants (admin only)
+func (h *Handlers) HandleListTenants(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	tenants, err := h.service.ListTenants(ctx)
+	if err != nil {
+		log.Printf("failed to list tenants: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list tenants")
+	}
+
+	return c.JSON(fiber.Map{"tenants": tenants})
+}
+
+// HandleGetTenantAdmin handles GET /api/v1/admin/tenants/:id
+// Returns a specific tenant (admin only)
+func (h *Handlers) HandleGetTenantAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	tenant, err := h.service.GetTenant(ctx, id)
+	if err != nil {
+		log.Printf("failed to get tenant: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Tenant not found")
+	}
+
+	return c.JSON(tenant)
 }
 
 // Internal/Settings handlers (for restore service)
