@@ -132,6 +132,21 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  async function deleteTenant(id: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.delete(`/v1/admin/tenants/${id}`)
+      tenants.value = tenants.value.filter((t) => t.id !== id)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to delete tenant'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   // Settings management
   async function fetchSettings(): Promise<void> {
     isLoading.value = true
@@ -228,6 +243,7 @@ export const useAdminStore = defineStore('admin', () => {
     // Tenants
     fetchTenants,
     fetchTenant,
+    deleteTenant,
     // Settings
     fetchSettings,
     fetchSetting,

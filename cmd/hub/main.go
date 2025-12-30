@@ -184,6 +184,7 @@ func main() {
 	// Tenant management (admin only)
 	admin.Get("/tenants", h.HandleListTenants)
 	admin.Get("/tenants/:id", h.HandleGetTenantAdmin)
+	admin.Delete("/tenants/:id", h.HandleDeleteTenant)
 
 	// Internal/Worker routes
 	internal := app.Group("/internal")

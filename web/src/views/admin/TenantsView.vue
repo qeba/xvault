@@ -5,11 +5,23 @@ import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
 import Input from '@/components/ui/input/Input.vue'
 import Button from '@/components/ui/button/Button.vue'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import type { Tenant } from '@/types'
 
 const adminStore = useAdminStore()
 
 const searchQuery = ref('')
 const isLoading = ref(true)
+const deleteError = ref<string | null>(null)
+const viewTenant = ref<Tenant | null>(null)
+const tenantToDelete = ref<Tenant | null>(null)
 
 const filteredTenants = computed(() => {
   if (!searchQuery.value) return adminStore.tenants
@@ -30,6 +42,16 @@ onMounted(async () => {
 
 function formatDate(date: string): string {
   return new Date(date).toLocaleDateString()
+}
+
+async function handleDelete(tenant: Tenant): Promise<void> {
+  deleteError.value = null
+  try {
+    await adminStore.deleteTenant(tenant.id)
+    tenantToDelete.value = null
+  } catch (error) {
+    deleteError.value = error instanceof Error ? error.message : 'Failed to delete tenant'
+  }
 }
 </script>
 
@@ -95,8 +117,20 @@ function formatDate(date: string): string {
                   <div class="text-sm text-muted-foreground">{{ formatDate(tenant.created_at) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
-                  <Button variant="ghost" size="sm">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    @click="viewTenant = tenant"
+                  >
                     View
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="text-destructive hover:text-destructive"
+                    @click="tenantToDelete = tenant"
+                  >
+                    Delete
                   </Button>
                 </td>
               </tr>
@@ -105,5 +139,66 @@ function formatDate(date: string): string {
         </div>
       </CardContent>
     </Card>
+
+    <!-- View Tenant Dialog -->
+    <Dialog v-model:open="!!viewTenant">
+      <DialogContent v-if="viewTenant">
+        <DialogHeader>
+          <DialogTitle>Tenant Information</DialogTitle>
+          <DialogDescription>
+            View detailed information about this tenant
+          </DialogDescription>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <div class="grid grid-cols-[120px_1fr] gap-4 items-center">
+            <span class="text-sm font-medium text-muted-foreground">Name</span>
+            <span class="text-sm">{{ viewTenant.name }}</span>
+          </div>
+          <div class="grid grid-cols-[120px_1fr] gap-4 items-center">
+            <span class="text-sm font-medium text-muted-foreground">Tenant ID</span>
+            <span class="text-sm font-mono text-xs">{{ viewTenant.id }}</span>
+          </div>
+          <div class="grid grid-cols-[120px_1fr] gap-4 items-center">
+            <span class="text-sm font-medium text-muted-foreground">Created</span>
+            <span class="text-sm">{{ formatDate(viewTenant.created_at) }}</span>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="viewTenant = null">Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <Dialog v-model:open="!!tenantToDelete">
+      <DialogContent v-if="tenantToDelete">
+        <DialogHeader>
+          <DialogTitle>Delete Tenant</DialogTitle>
+          <DialogDescription>
+            Are you sure you want to delete <strong>{{ tenantToDelete.name }}</strong>?
+            This action cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <div v-if="deleteError" class="rounded-md bg-destructive/15 p-3 text-sm text-destructive">
+          {{ deleteError }}
+        </div>
+        <DialogFooter>
+          <Button
+            variant="outline"
+            @click="tenantToDelete = null; deleteError = null"
+            :disabled="adminStore.isLoading"
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            @click="handleDelete(tenantToDelete)"
+            :disabled="adminStore.isLoading"
+          >
+            {{ adminStore.isLoading ? 'Deleting...' : 'Delete Tenant' }}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
 </template>

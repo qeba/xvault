@@ -972,6 +972,26 @@ func (h *Handlers) HandleGetTenantAdmin(c *fiber.Ctx) error {
 	return c.JSON(tenant)
 }
 
+// HandleDeleteTenant handles DELETE /api/v1/admin/tenants/:id
+// Deletes a tenant and all associated data (admin only)
+// This will enqueue delete_snapshot jobs for all snapshots before deleting the tenant
+func (h *Handlers) HandleDeleteTenant(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(30 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	if err := h.service.DeleteTenant(ctx, id); err != nil {
+		log.Printf("failed to delete tenant: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete tenant")
+	}
+
+	return c.Status(fiber.StatusNoContent).Send(nil)
+}
+
 // Internal/Settings handlers (for restore service)
 
 // HandleGetDownloadExpiration handles GET /internal/settings/download-expiration

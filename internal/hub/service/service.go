@@ -1238,3 +1238,36 @@ func (s *Service) ListTenants(ctx context.Context) ([]repository.Tenant, error) 
 func (s *Service) GetTenant(ctx context.Context, tenantID string) (*repository.Tenant, error) {
 	return s.repo.GetTenantByID(ctx, tenantID)
 }
+
+// DeleteTenant deletes a tenant and all associated data (admin only)
+// It first enqueues delete_snapshot jobs to clean up worker storage, then deletes the tenant
+func (s *Service) DeleteTenant(ctx context.Context, tenantID string) error {
+	// First, get all snapshots for this tenant so we can enqueue cleanup jobs
+	snapshots, err := s.repo.ListSnapshotsByTenantID(ctx, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to list snapshots for cleanup: %w", err)
+	}
+
+	// Enqueue delete_snapshot jobs for all snapshots (to clean up worker storage)
+	// Use existing EnqueueDeleteJob method
+	var enqueueErrors []error
+	for _, snapshot := range snapshots {
+		if snapshot.WorkerID != nil && *snapshot.WorkerID != "" {
+			// Enqueue delete job using existing method
+			_, err := s.EnqueueDeleteJob(ctx, snapshot.ID)
+			if err != nil {
+				// Log but continue with other snapshots
+				log.Printf("warning: failed to enqueue delete job for snapshot %s: %v", snapshot.ID, err)
+				enqueueErrors = append(enqueueErrors, err)
+			}
+		}
+	}
+
+	// Finally, delete the tenant (database cascade handles the rest)
+	if err := s.repo.DeleteTenant(ctx, tenantID); err != nil {
+		return fmt.Errorf("failed to delete tenant: %w", err)
+	}
+
+	log.Printf("deleted tenant %s and enqueued %d snapshot cleanup jobs (%d failed)", tenantID, len(snapshots), len(enqueueErrors))
+	return nil
+}

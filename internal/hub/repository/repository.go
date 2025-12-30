@@ -1216,3 +1216,58 @@ func (r *Repository) ListTenants(ctx context.Context) ([]Tenant, error) {
 func (r *Repository) GetTenantByID(ctx context.Context, tenantID string) (*Tenant, error) {
 	return r.GetTenant(ctx, tenantID)
 }
+
+// DeleteTenant deletes a tenant (admin only)
+// Note: Due to ON DELETE CASCADE, this will also delete:
+// - users, tenant_keys, credentials, sources, schedules, jobs, snapshots, audit_events
+// Worker storage cleanup must be handled separately by enqueueing delete_snapshot jobs
+func (r *Repository) DeleteTenant(ctx context.Context, tenantID string) error {
+	query := `DELETE FROM tenants WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, tenantID)
+	if err != nil {
+		return fmt.Errorf("failed to delete tenant: %w", err)
+	}
+	return nil
+}
+
+// ListSnapshotsByTenantID returns all snapshots for a tenant (for cleanup)
+func (r *Repository) ListSnapshotsByTenantID(ctx context.Context, tenantID string) ([]Snapshot, error) {
+	query := `
+		SELECT id, tenant_id, source_id, job_id, status, size_bytes,
+			started_at, finished_at, duration_ms, manifest_json,
+			encryption_algorithm, encryption_key_id, encryption_recipient,
+			storage_backend, worker_id, local_path, bucket, object_key, etag,
+			created_at, updated_at
+		FROM snapshots
+		WHERE tenant_id = $1
+		ORDER BY created_at DESC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots for tenant: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []Snapshot
+	for rows.Next() {
+		var s Snapshot
+		err := rows.Scan(
+			&s.ID, &s.TenantID, &s.SourceID, &s.JobID, &s.Status, &s.SizeBytes,
+			&s.StartedAt, &s.FinishedAt, &s.DurationMs, &s.ManifestJSON,
+			&s.EncryptionAlgorithm, &s.EncryptionKeyID, &s.EncryptionRecipient,
+			&s.StorageBackend, &s.WorkerID, &s.LocalPath, &s.Bucket, &s.ObjectKey, &s.ETag,
+			&s.CreatedAt, &s.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan snapshot: %w", err)
+		}
+		snapshots = append(snapshots, s)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating snapshots: %w", err)
+	}
+
+	return snapshots, nil
+}

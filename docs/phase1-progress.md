@@ -499,6 +499,7 @@ server {
 | DELETE | `/api/v1/admin/users/:id` | Delete user | Yes (JWT + admin role) |
 | GET | `/api/v1/admin/tenants` | List all tenants | Yes (JWT + admin role) |
 | GET | `/api/v1/admin/tenants/:id` | Get tenant by ID | Yes (JWT + admin role) |
+| DELETE | `/api/v1/admin/tenants/:id` | Delete tenant with cleanup | Yes (JWT + admin role) |
 | GET | `/api/v1/admin/settings` | List settings | Yes (JWT + admin role) |
 | PUT | `/api/v1/admin/settings/:key` | Update setting | Yes (JWT + admin role) |
 | POST | `/api/v1/admin/retention/run` | Run retention for all sources | Yes (JWT + admin role) |
@@ -568,6 +569,11 @@ server {
 - ✅ Backend admin endpoints for user/tenant management
 - ✅ Type definitions for all entities ([`types/index.ts`](web/src/types/index.ts))
 - ✅ **Full CRUD forms in admin views** - Create, Edit, Delete dialogs for Users, Sources, Schedules
+
+**Admin Dashboard - Completed (Updated)**:
+- ✅ **Tenant deletion with worker cleanup** - Delete tenant cascades to users, sources, schedules; enqueues delete_snapshot jobs for worker storage cleanup
+- ✅ **TenantsView with View/Delete dialogs** - View button shows tenant info, Delete button with confirmation
+- ✅ **Backend DELETE /admin/tenants/:id endpoint** - Service layer enqueues cleanup jobs before deletion
 
 **Admin Dashboard - Remaining Tasks**:
 - ⏳ Worker monitoring page
