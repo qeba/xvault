@@ -8,14 +8,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/redis/go-redis/v9"
-	_ "github.com/lib/pq"
 	"xvault/internal/hub/database"
 	"xvault/internal/hub/handlers"
 	middlewarepkg "xvault/internal/hub/middleware"
 	"xvault/internal/hub/repository"
 	"xvault/internal/hub/service"
+
+	"github.com/gofiber/fiber/v2"
+	_ "github.com/lib/pq"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -185,6 +186,13 @@ func main() {
 	admin.Get("/tenants", h.HandleListTenants)
 	admin.Get("/tenants/:id", h.HandleGetTenantAdmin)
 	admin.Delete("/tenants/:id", h.HandleDeleteTenant)
+
+	// Source management (admin only)
+	admin.Get("/sources", h.HandleListSourcesAdmin)
+	admin.Get("/sources/:id", h.HandleGetSourceAdmin)
+	admin.Post("/sources", h.HandleCreateSourceAdmin)
+	admin.Put("/sources/:id", h.HandleUpdateSourceAdmin)
+	admin.Delete("/sources/:id", h.HandleDeleteSourceAdmin)
 
 	// Internal/Worker routes
 	internal := app.Group("/internal")

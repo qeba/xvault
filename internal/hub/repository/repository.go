@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"xvault/pkg/types"
+
+	"github.com/google/uuid"
 )
 
 // Repository handles database operations for the Hub
@@ -67,14 +68,14 @@ func (r *Repository) GetTenant(ctx context.Context, id string) (*Tenant, error) 
 
 // TenantKey represents a tenant encryption key record
 type TenantKey struct {
-	ID                 string    `json:"id"`
-	TenantID           string    `json:"tenant_id"`
-	Algorithm          string    `json:"algorithm"`
-	PublicKey          string    `json:"public_key"`
-	EncryptedPrivateKey string   `json:"encrypted_private_key"`
-	KeyStatus          string    `json:"key_status"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                  string    `json:"id"`
+	TenantID            string    `json:"tenant_id"`
+	Algorithm           string    `json:"algorithm"`
+	PublicKey           string    `json:"public_key"`
+	EncryptedPrivateKey string    `json:"encrypted_private_key"`
+	KeyStatus           string    `json:"key_status"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // CreateTenantKey creates a new tenant encryption key
@@ -118,13 +119,13 @@ func (r *Repository) GetActiveTenantKey(ctx context.Context, tenantID string) (*
 
 // Credential represents an encrypted credential record
 type Credential struct {
-	ID        string    `json:"id"`
-	TenantID  string    `json:"tenant_id"`
-	Kind      string    `json:"kind"`
-	Ciphertext string   `json:"ciphertext"`
-	KeyID     string    `json:"key_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         string    `json:"id"`
+	TenantID   string    `json:"tenant_id"`
+	Kind       string    `json:"kind"`
+	Ciphertext string    `json:"ciphertext"`
+	KeyID      string    `json:"key_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // CreateCredential creates a new encrypted credential
@@ -837,11 +838,11 @@ func (r *Repository) GetSchedule(ctx context.Context, scheduleID string) (*Sched
 
 // SystemSetting represents a system setting record
 type SystemSetting struct {
-	Key         string     `json:"key"`
-	Value       string     `json:"value"`
-	Description *string    `json:"description,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	Key         string    `json:"key"`
+	Value       string    `json:"value"`
+	Description *string   `json:"description,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // GetSetting retrieves a system setting by key
@@ -1013,14 +1014,14 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, e
 
 // RefreshToken represents a refresh token record
 type RefreshToken struct {
-	ID             string     `json:"id"`
-	UserID         string     `json:"user_id"`
-	TokenHash      string     `json:"-"`
-	ExpiresAt      time.Time  `json:"expires_at"`
-	CreatedAt      time.Time  `json:"created_at"`
-	RevokedAt      *time.Time `json:"revoked_at,omitempty"`
-	IPAddress      *string    `json:"ip_address,omitempty"`
-	UserAgent      *string    `json:"user_agent,omitempty"`
+	ID        string     `json:"id"`
+	UserID    string     `json:"user_id"`
+	TokenHash string     `json:"-"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	CreatedAt time.Time  `json:"created_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	IPAddress *string    `json:"ip_address,omitempty"`
+	UserAgent *string    `json:"user_agent,omitempty"`
 }
 
 // CreateRefreshToken creates a new refresh token
@@ -1270,4 +1271,120 @@ func (r *Repository) ListSnapshotsByTenantID(ctx context.Context, tenantID strin
 	}
 
 	return snapshots, nil
+}
+
+// ==================== ADMIN SOURCE MANAGEMENT ====================
+
+// ListAllSources returns all sources across all tenants (admin only)
+func (r *Repository) ListAllSources(ctx context.Context) ([]*Source, error) {
+	query := `SELECT id, tenant_id, type, name, status, config, credential_id, created_at, updated_at
+	          FROM sources ORDER BY created_at DESC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all sources: %w", err)
+	}
+	defer rows.Close()
+
+	var sources []*Source
+	for rows.Next() {
+		var source Source
+		err := rows.Scan(
+			&source.ID, &source.TenantID, &source.Type, &source.Name, &source.Status, &source.Config, &source.CredentialID, &source.CreatedAt, &source.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan source: %w", err)
+		}
+		sources = append(sources, &source)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating sources: %w", err)
+	}
+
+	return sources, nil
+}
+
+// UpdateSource updates a source's name and status
+func (r *Repository) UpdateSource(ctx context.Context, sourceID, name, status string) (*Source, error) {
+	query := `UPDATE sources SET name = $2, status = $3, updated_at = $4 WHERE id = $1
+	          RETURNING id, tenant_id, type, name, status, config, credential_id, created_at, updated_at`
+
+	var source Source
+	err := r.db.QueryRowContext(ctx, query, sourceID, name, status, time.Now()).Scan(
+		&source.ID, &source.TenantID, &source.Type, &source.Name, &source.Status, &source.Config, &source.CredentialID, &source.CreatedAt, &source.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update source: %w", err)
+	}
+
+	return &source, nil
+}
+
+// UpdateSourceConfig updates a source's config (for changing connection settings)
+func (r *Repository) UpdateSourceConfig(ctx context.Context, sourceID string, config json.RawMessage) error {
+	query := `UPDATE sources SET config = $2, updated_at = $3 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, sourceID, config, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to update source config: %w", err)
+	}
+	return nil
+}
+
+// UpdateSourceCredential updates a source's credential ID (for rotating credentials)
+func (r *Repository) UpdateSourceCredential(ctx context.Context, sourceID, credentialID string) error {
+	query := `UPDATE sources SET credential_id = $2, updated_at = $3 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, sourceID, credentialID, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to update source credential: %w", err)
+	}
+	return nil
+}
+
+// DeleteSource deletes a source
+func (r *Repository) DeleteSource(ctx context.Context, sourceID string) error {
+	query := `DELETE FROM sources WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, sourceID)
+	if err != nil {
+		return fmt.Errorf("failed to delete source: %w", err)
+	}
+	return nil
+}
+
+// ==================== ADMIN CREDENTIAL MANAGEMENT ====================
+
+// ListCredentials returns all credentials for a tenant (admin only)
+func (r *Repository) ListCredentials(ctx context.Context, tenantID string) ([]*Credential, error) {
+	query := `SELECT id, tenant_id, kind, ciphertext, key_id, created_at, updated_at
+	          FROM credentials WHERE tenant_id = $1 ORDER BY created_at DESC`
+
+	rows, err := r.db.QueryContext(ctx, query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list credentials: %w", err)
+	}
+	defer rows.Close()
+
+	var credentials []*Credential
+	for rows.Next() {
+		var cred Credential
+		err := rows.Scan(
+			&cred.ID, &cred.TenantID, &cred.Kind, &cred.Ciphertext, &cred.KeyID, &cred.CreatedAt, &cred.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan credential: %w", err)
+		}
+		credentials = append(credentials, &cred)
+	}
+
+	return credentials, nil
+}
+
+// DeleteCredential deletes a credential
+func (r *Repository) DeleteCredential(ctx context.Context, credentialID string) error {
+	query := `DELETE FROM credentials WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, credentialID)
+	if err != nil {
+		return fmt.Errorf("failed to delete credential: %w", err)
+	}
+	return nil
 }

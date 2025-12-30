@@ -8,10 +8,24 @@ export interface User {
   updated_at: string
 }
 
+// Admin User Management types
+export interface AdminCreateUserRequest {
+  email: string
+  password: string
+  name: string
+  role?: 'owner' | 'admin' | 'member'
+}
+
+export interface AdminUpdateUserRequest {
+  email?: string
+  role?: 'owner' | 'admin' | 'member'
+}
+
 // Tenant types
 export interface Tenant {
   id: string
   name: string
+  plan?: string
   created_at: string
   updated_at: string
 }
@@ -62,16 +76,29 @@ export interface AuthResponse {
 }
 
 // Source types
-export type SourceType = 'ssh' | 'sftp' | 'ftp' | 'mysql' | 'postgresql' | 'mongodb'
+export type SourceType = 'ssh' | 'sftp' | 'ftp' | 'mysql' | 'postgresql'
+
+export interface SourceConfig {
+  // SSH/SFTP/FTP config
+  host?: string
+  port?: number
+  username?: string
+  paths?: string[]
+  use_password?: boolean
+  // Database config
+  database?: string
+  tables?: string[]  // MySQL
+  schemas?: string[] // PostgreSQL
+}
 
 export interface Source {
   id: string
   tenant_id: string
   name: string
   type: SourceType
-  config: Record<string, unknown>
-  enabled: boolean
-  retention_policy_id: string | null
+  status: 'active' | 'disabled'
+  config: SourceConfig
+  credential_id: string
   created_at: string
   updated_at: string
 }
@@ -79,9 +106,23 @@ export interface Source {
 export interface CreateSourceRequest {
   name: string
   type: SourceType
-  config: Record<string, unknown>
-  enabled?: boolean
-  retention_policy_id?: string
+  config: SourceConfig
+}
+
+// Admin Source Management types
+export interface AdminCreateSourceRequest {
+  tenant_id: string
+  type: SourceType
+  name: string
+  config: SourceConfig
+  credential: string // Base64-encoded password or private key
+}
+
+export interface AdminUpdateSourceRequest {
+  name?: string
+  status?: 'active' | 'disabled'
+  config?: SourceConfig
+  credential?: string // Base64-encoded new credential (for rotation)
 }
 
 // Snapshot types

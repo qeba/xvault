@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"xvault/internal/hub/repository"
 	"xvault/pkg/crypto"
 	"xvault/pkg/types"
+
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -25,8 +27,8 @@ const (
 
 // Service handles business logic for the Hub
 type Service struct {
-	repo       *repository.Repository
-	redis      *redis.Client
+	repo          *repository.Repository
+	redis         *redis.Client
 	encryptionKEK string
 }
 
@@ -46,7 +48,7 @@ type CreateTenantRequest struct {
 
 // CreateTenantResponse is the response when creating a tenant
 type CreateTenantResponse struct {
-	Tenant    *repository.Tenant  `json:"tenant"`
+	Tenant    *repository.Tenant `json:"tenant"`
 	PublicKey string             `json:"public_key"`
 }
 
@@ -84,9 +86,9 @@ func (s *Service) CreateTenant(ctx context.Context, req CreateTenantRequest) (*C
 
 // CreateCredentialRequest is the request to create encrypted credentials
 type CreateCredentialRequest struct {
-	TenantID   string `json:"tenant_id"`
-	Kind       string `json:"kind"` // "source" or "storage"
-	Plaintext  string `json:"plaintext"` // Base64-encoded plaintext secret
+	TenantID  string `json:"tenant_id"`
+	Kind      string `json:"kind"`      // "source" or "storage"
+	Plaintext string `json:"plaintext"` // Base64-encoded plaintext secret
 }
 
 // CreateCredential creates encrypted credentials for a tenant
@@ -642,9 +644,9 @@ func (s *Service) RunRetentionEvaluationForAllSources(ctx context.Context) ([]*S
 		}
 
 		results = append(results, &SourceRetentionResult{
-			SourceID:          schedule.SourceID,
-			EvaluationResult:  result,
-			JobsEnqueued:      len(result.SnapshotsToDelete),
+			SourceID:         schedule.SourceID,
+			EvaluationResult: result,
+			JobsEnqueued:     len(result.SnapshotsToDelete),
 		})
 	}
 
@@ -653,22 +655,22 @@ func (s *Service) RunRetentionEvaluationForAllSources(ctx context.Context) ([]*S
 
 // SourceRetentionResult represents the result of running retention evaluation for a source
 type SourceRetentionResult struct {
-	SourceID         string                              `json:"source_id"`
-	EvaluationResult *types.RetentionEvaluationResult    `json:"evaluation_result,omitempty"`
-	JobsEnqueued     int                                 `json:"jobs_enqueued"`
-	Error            string                              `json:"error,omitempty"`
+	SourceID         string                           `json:"source_id"`
+	EvaluationResult *types.RetentionEvaluationResult `json:"evaluation_result,omitempty"`
+	JobsEnqueued     int                              `json:"jobs_enqueued"`
+	Error            string                           `json:"error,omitempty"`
 }
 
 // Schedule management
 
 // CreateScheduleRequest is the request to create a schedule
 type CreateScheduleRequest struct {
-	TenantID         string             `json:"tenant_id"`
-	SourceID         string             `json:"source_id"`
-	Cron             *string            `json:"cron,omitempty"`
-	IntervalMinutes  *int               `json:"interval_minutes,omitempty"`
-	Timezone         string             `json:"timezone,omitempty"` // Default "UTC"
-	RetentionPolicy  types.RetentionPolicy `json:"retention_policy"`
+	TenantID        string                `json:"tenant_id"`
+	SourceID        string                `json:"source_id"`
+	Cron            *string               `json:"cron,omitempty"`
+	IntervalMinutes *int                  `json:"interval_minutes,omitempty"`
+	Timezone        string                `json:"timezone,omitempty"` // Default "UTC"
+	RetentionPolicy types.RetentionPolicy `json:"retention_policy"`
 }
 
 // CreateSchedule creates a new schedule for a source
@@ -714,11 +716,11 @@ func (s *Service) CreateSchedule(ctx context.Context, req CreateScheduleRequest)
 
 // UpdateScheduleRequest is the request to update a schedule
 type UpdateScheduleRequest struct {
-	Cron            *string            `json:"cron,omitempty"`
-	IntervalMinutes *int               `json:"interval_minutes,omitempty"`
-	Timezone        *string            `json:"timezone,omitempty"`
-	Status          *string            `json:"status,omitempty"` // "enabled" or "disabled"
-	RetentionPolicy  *types.RetentionPolicy `json:"retention_policy,omitempty"`
+	Cron            *string                `json:"cron,omitempty"`
+	IntervalMinutes *int                   `json:"interval_minutes,omitempty"`
+	Timezone        *string                `json:"timezone,omitempty"`
+	Status          *string                `json:"status,omitempty"` // "enabled" or "disabled"
+	RetentionPolicy *types.RetentionPolicy `json:"retention_policy,omitempty"`
 }
 
 // UpdateSchedule updates an existing schedule
@@ -1155,8 +1157,26 @@ func (s *Service) CreateUserAdmin(ctx context.Context, req CreateUserAdminReques
 		return nil, fmt.Errorf("invalid role: must be owner, admin, or member")
 	}
 
+	// Generate tenant name from email if not provided
+	tenantName := req.Name
+	if tenantName == "" {
+		// Extract username from email (part before @)
+		emailParts := strings.Split(req.Email, "@")
+		if len(emailParts) > 0 && emailParts[0] != "" {
+			// Capitalize first letter and add "'s Workspace"
+			username := emailParts[0]
+			if len(username) > 0 {
+				tenantName = strings.ToUpper(string(username[0])) + username[1:] + "'s Workspace"
+			} else {
+				tenantName = "New Workspace"
+			}
+		} else {
+			tenantName = "New Workspace"
+		}
+	}
+
 	// Create tenant first
-	tenant, err := s.repo.CreateTenant(ctx, req.Name)
+	tenant, err := s.repo.CreateTenant(ctx, tenantName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create tenant: %w", err)
 	}
@@ -1270,4 +1290,122 @@ func (s *Service) DeleteTenant(ctx context.Context, tenantID string) error {
 
 	log.Printf("deleted tenant %s and enqueued %d snapshot cleanup jobs (%d failed)", tenantID, len(snapshots), len(enqueueErrors))
 	return nil
+}
+
+// ========== Admin Source Management ==========
+
+// ListAllSources returns all sources across all tenants (admin only)
+func (s *Service) ListAllSources(ctx context.Context) ([]*repository.Source, error) {
+	return s.repo.ListAllSources(ctx)
+}
+
+// CreateSourceAdminRequest is the request to create a source as admin
+type CreateSourceAdminRequest struct {
+	TenantID   string          `json:"tenant_id"`
+	Type       string          `json:"type"`
+	Name       string          `json:"name"`
+	Config     json.RawMessage `json:"config"`
+	Credential string          `json:"credential"` // Base64-encoded credential (password or private key)
+}
+
+// CreateSourceAdmin creates a source with credential for a tenant (admin only)
+func (s *Service) CreateSourceAdmin(ctx context.Context, req CreateSourceAdminRequest) (*repository.Source, error) {
+	// Validate source type
+	validTypes := map[string]bool{"ssh": true, "sftp": true, "ftp": true, "mysql": true, "postgresql": true}
+	if !validTypes[req.Type] {
+		return nil, fmt.Errorf("invalid source type: must be ssh, sftp, ftp, mysql, or postgresql")
+	}
+
+	// Verify tenant exists
+	_, err := s.repo.GetTenant(ctx, req.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("tenant not found: %w", err)
+	}
+
+	// Create credential for the source
+	cred, err := s.CreateCredential(ctx, CreateCredentialRequest{
+		TenantID:  req.TenantID,
+		Kind:      "source",
+		Plaintext: req.Credential, // Already base64-encoded from frontend
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create credential: %w", err)
+	}
+
+	// Create source with the new credential
+	source, err := s.repo.CreateSource(ctx, req.TenantID, req.Type, req.Name, cred.ID, req.Config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create source: %w", err)
+	}
+
+	return source, nil
+}
+
+// UpdateSourceAdminRequest is the request to update a source as admin
+type UpdateSourceAdminRequest struct {
+	Name       string          `json:"name,omitempty"`
+	Status     string          `json:"status,omitempty"` // "active" or "disabled"
+	Config     json.RawMessage `json:"config,omitempty"`
+	Credential string          `json:"credential,omitempty"` // Base64-encoded new credential (if rotating)
+}
+
+// UpdateSourceAdmin updates a source (admin only)
+func (s *Service) UpdateSourceAdmin(ctx context.Context, sourceID string, req UpdateSourceAdminRequest) (*repository.Source, error) {
+	// Get existing source
+	source, err := s.repo.GetSource(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update name/status if provided
+	name := source.Name
+	status := source.Status
+	if req.Name != "" {
+		name = req.Name
+	}
+	if req.Status != "" {
+		if req.Status != "active" && req.Status != "disabled" {
+			return nil, fmt.Errorf("invalid status: must be active or disabled")
+		}
+		status = req.Status
+	}
+
+	// Update the source
+	source, err = s.repo.UpdateSource(ctx, sourceID, name, status)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update source: %w", err)
+	}
+
+	// Update config if provided
+	if len(req.Config) > 0 {
+		if err := s.repo.UpdateSourceConfig(ctx, sourceID, req.Config); err != nil {
+			return nil, fmt.Errorf("failed to update source config: %w", err)
+		}
+	}
+
+	// Rotate credential if provided
+	if req.Credential != "" {
+		// Create new credential
+		cred, err := s.CreateCredential(ctx, CreateCredentialRequest{
+			TenantID:  source.TenantID,
+			Kind:      "source",
+			Plaintext: req.Credential,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create new credential: %w", err)
+		}
+
+		// Update source to use new credential
+		if err := s.repo.UpdateSourceCredential(ctx, sourceID, cred.ID); err != nil {
+			return nil, fmt.Errorf("failed to update source credential: %w", err)
+		}
+	}
+
+	// Fetch updated source
+	return s.repo.GetSource(ctx, sourceID)
+}
+
+// DeleteSource deletes a source (admin only)
+func (s *Service) DeleteSource(ctx context.Context, sourceID string) error {
+	return s.repo.DeleteSource(ctx, sourceID)
 }

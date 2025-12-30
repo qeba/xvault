@@ -8,10 +8,11 @@ import (
 	"log"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	middlewarepkg "xvault/internal/hub/middleware"
 	"xvault/internal/hub/service"
 	"xvault/pkg/types"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 // Handlers wraps the service for HTTP handlers
@@ -442,7 +443,7 @@ func (h *Handlers) HandleRunRetentionForAllSources(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{
-		"results":          results,
+		"results": results,
 		"summary": fiber.Map{
 			"sources_evaluated": len(results),
 			"total_snapshots":   totalSnapshots,
@@ -502,9 +503,9 @@ func (h *Handlers) HandleGetSourceRetentionPolicy(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"source_id":         sourceID,
-		"schedule_id":       schedule.ID,
-		"retention_policy":  policy,
+		"source_id":        sourceID,
+		"schedule_id":      schedule.ID,
+		"retention_policy": policy,
 	})
 }
 
@@ -1009,4 +1010,113 @@ func (h *Handlers) HandleGetDownloadExpiration(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"hours": hours,
 	})
+}
+
+// Admin / Source handlers
+
+// HandleListSourcesAdmin handles GET /api/v1/admin/sources
+// Returns all sources across all tenants (admin only)
+func (h *Handlers) HandleListSourcesAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	sources, err := h.service.ListAllSources(ctx)
+	if err != nil {
+		log.Printf("failed to list all sources: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list sources")
+	}
+
+	return c.JSON(fiber.Map{"sources": sources})
+}
+
+// HandleGetSourceAdmin handles GET /api/v1/admin/sources/:id
+// Returns a specific source (admin only)
+func (h *Handlers) HandleGetSourceAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	source, err := h.service.GetSource(ctx, id)
+	if err != nil {
+		log.Printf("failed to get source: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Source not found")
+	}
+
+	return c.JSON(source)
+}
+
+// HandleCreateSourceAdmin handles POST /api/v1/admin/sources
+// Creates a new source with credential (admin only)
+func (h *Handlers) HandleCreateSourceAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	var req service.CreateSourceAdminRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.TenantID == "" || req.Type == "" || req.Name == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("tenant_id, type, and name are required"), "Validation failed")
+	}
+
+	if req.Credential == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("credential is required"), "Validation failed")
+	}
+
+	source, err := h.service.CreateSourceAdmin(ctx, req)
+	if err != nil {
+		log.Printf("failed to create source: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create source")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(source)
+}
+
+// HandleUpdateSourceAdmin handles PUT /api/v1/admin/sources/:id
+// Updates a source (admin only)
+func (h *Handlers) HandleUpdateSourceAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	var req service.UpdateSourceAdminRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	source, err := h.service.UpdateSourceAdmin(ctx, id, req)
+	if err != nil {
+		log.Printf("failed to update source: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update source")
+	}
+
+	return c.JSON(source)
+}
+
+// HandleDeleteSourceAdmin handles DELETE /api/v1/admin/sources/:id
+// Deletes a source (admin only)
+func (h *Handlers) HandleDeleteSourceAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	if err := h.service.DeleteSource(ctx, id); err != nil {
+		log.Printf("failed to delete source: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete source")
+	}
+
+	return c.Status(fiber.StatusNoContent).Send(nil)
 }

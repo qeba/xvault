@@ -1,21 +1,20 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import api from '@/lib/api'
-import type { User, Tenant, Setting } from '@/types'
-
-interface CreateUserRequest {
-  email: string
-  password: string
-  name: string
-  role?: 'owner' | 'admin' | 'member'
-}
+import type { User, Tenant, Setting, Source, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest } from '@/types'
 
 export const useAdminStore = defineStore('admin', () => {
   const users = ref<User[]>([])
   const tenants = ref<Tenant[]>([])
+  const sources = ref<Source[]>([])
   const settings = ref<Setting[]>([])
   const isLoading = ref(false)
   const error = ref<string | null>(null)
+
+  // Computed: Get tenant by ID for lookups
+  const getTenantById = computed(() => (id: string) => {
+    return tenants.value.find(t => t.id === id)
+  })
 
   // Users management
   async function fetchUsers(): Promise<void> {
@@ -24,6 +23,7 @@ export const useAdminStore = defineStore('admin', () => {
 
     try {
       const response = await api.get<{ users: User[] }>('/v1/admin/users')
+      // API returns { users: [...] } wrapped format
       users.value = response.data.users || []
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to fetch users'
@@ -38,8 +38,10 @@ export const useAdminStore = defineStore('admin', () => {
     error.value = null
 
     try {
-      const response = await api.get<User>(`/v1/admin/users/${id}`)
-      return response.data
+      const response = await api.get<User | { user: User }>(`/v1/admin/users/${id}`)
+      // Handle both wrapped { user: {...} } and direct response formats
+      const data = response.data
+      return 'user' in data ? data.user : data
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to fetch user'
       throw err
@@ -48,7 +50,7 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
-  async function createUser(data: CreateUserRequest): Promise<User> {
+  async function createUser(data: AdminCreateUserRequest): Promise<User> {
     isLoading.value = true
     error.value = null
 
@@ -66,7 +68,7 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
-  async function updateUser(id: string, data: Partial<CreateUserRequest>): Promise<void> {
+  async function updateUser(id: string, data: AdminUpdateUserRequest): Promise<User> {
     isLoading.value = true
     error.value = null
 
@@ -78,6 +80,7 @@ export const useAdminStore = defineStore('admin', () => {
       if (index !== -1) {
         users.value[index] = updatedUser
       }
+      return updatedUser
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to update user'
       throw err
@@ -108,6 +111,7 @@ export const useAdminStore = defineStore('admin', () => {
 
     try {
       const response = await api.get<{ tenants: Tenant[] }>('/v1/admin/tenants')
+      // API returns { tenants: [...] } wrapped format
       tenants.value = response.data.tenants || []
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to fetch tenants'
@@ -122,8 +126,10 @@ export const useAdminStore = defineStore('admin', () => {
     error.value = null
 
     try {
-      const response = await api.get<Tenant>(`/v1/admin/tenants/${id}`)
-      return response.data
+      const response = await api.get<Tenant | { tenant: Tenant }>(`/v1/admin/tenants/${id}`)
+      // Handle both wrapped { tenant: {...} } and direct response formats
+      const data = response.data
+      return 'tenant' in data ? data.tenant : data
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Failed to fetch tenant'
       throw err
@@ -227,13 +233,100 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  // Sources management (admin)
+  async function fetchSources(): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ sources: Source[] }>('/v1/admin/sources')
+      sources.value = response.data.sources || []
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch sources'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchSource(id: string): Promise<Source> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<Source>(`/v1/admin/sources/${id}`)
+      return response.data
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch source'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function createSource(data: AdminCreateSourceRequest): Promise<Source> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<Source>('/v1/admin/sources', data)
+      const newSource = response.data
+      sources.value.push(newSource)
+      return newSource
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to create source'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function updateSource(id: string, data: AdminUpdateSourceRequest): Promise<Source> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.put<Source>(`/v1/admin/sources/${id}`, data)
+      const updatedSource = response.data
+
+      const index = sources.value.findIndex((s) => s.id === id)
+      if (index !== -1) {
+        sources.value[index] = updatedSource
+      }
+      return updatedSource
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to update source'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function deleteSource(id: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.delete(`/v1/admin/sources/${id}`)
+      sources.value = sources.value.filter((s) => s.id !== id)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to delete source'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     // State
     users,
     tenants,
+    sources,
     settings,
     isLoading,
     error,
+    // Computed
+    getTenantById,
     // Users
     fetchUsers,
     fetchUser,
@@ -244,6 +337,12 @@ export const useAdminStore = defineStore('admin', () => {
     fetchTenants,
     fetchTenant,
     deleteTenant,
+    // Sources
+    fetchSources,
+    fetchSource,
+    createSource,
+    updateSource,
+    deleteSource,
     // Settings
     fetchSettings,
     fetchSetting,

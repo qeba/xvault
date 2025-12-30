@@ -21,8 +21,10 @@ const tenantToDelete = ref<Tenant | null>(null)
 
 const filteredTenants = computed(() => {
   if (!searchQuery.value) return adminStore.tenants
+  const query = searchQuery.value.toLowerCase()
   return adminStore.tenants.filter(t =>
-    t.name.toLowerCase().includes(searchQuery.value.toLowerCase())
+    (t.name || '').toLowerCase().includes(query) ||
+    t.id.toLowerCase().includes(query)
   )
 })
 
@@ -120,7 +122,7 @@ async function handleDelete(): Promise<void> {
                 class="hover:bg-muted/50 transition-colors"
               >
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm font-medium">{{ tenant.name }}</div>
+                  <div class="text-sm font-medium">{{ tenant.name || 'Unnamed Tenant' }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm text-muted-foreground font-mono text-xs">
@@ -163,7 +165,7 @@ async function handleDelete(): Promise<void> {
         <div class="space-y-4">
           <div class="grid grid-cols-[120px_1fr] gap-4 items-center">
             <span class="text-sm font-medium text-muted-foreground">Name</span>
-            <span class="text-sm">{{ viewingTenant.name }}</span>
+            <span class="text-sm">{{ viewingTenant.name || 'Unnamed Tenant' }}</span>
           </div>
           <div class="grid grid-cols-[120px_1fr] gap-4 items-center">
             <span class="text-sm font-medium text-muted-foreground">Tenant ID</span>
@@ -191,7 +193,7 @@ async function handleDelete(): Promise<void> {
       <div v-if="tenantToDelete" class="p-6">
         <h2 class="text-lg font-semibold mb-4">Delete Tenant</h2>
         <p class="text-sm text-muted-foreground mb-4">
-          Are you sure you want to delete <strong>{{ tenantToDelete.name }}</strong>?
+          Are you sure you want to delete <strong>{{ tenantToDelete.name || 'this tenant' }}</strong>?
           This action cannot be undone.
         </p>
         <div v-if="deleteError" class="mb-4 p-3 text-sm text-destructive bg-destructive/10 rounded-md">

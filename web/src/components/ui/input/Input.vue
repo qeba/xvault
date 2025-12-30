@@ -7,7 +7,7 @@ interface Props {
   type?: string
   placeholder?: string
   disabled?: boolean
-  modelValue?: string
+  modelValue?: string | number
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -15,7 +15,7 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  (e: 'update:modelValue', value: string): void
+  (e: 'update:modelValue', value: string | number): void
 }>()
 
 const computedClass = computed(() =>
@@ -27,7 +27,11 @@ const computedClass = computed(() =>
 
 function onInput(event: Event) {
   const target = event.target as HTMLInputElement
-  emit('update:modelValue', target.value)
+  if (props.type === 'number') {
+    emit('update:modelValue', target.valueAsNumber)
+  } else {
+    emit('update:modelValue', target.value)
+  }
 }
 </script>
 
