@@ -452,9 +452,9 @@ func (r *Repository) CreateSnapshot(ctx context.Context, tenantID, sourceID, job
 
 	query := `INSERT INTO snapshots
 	          (id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
-	           manifest_json, encryption_algorithm, encryption_recipient, storage_backend, worker_id, local_path,
+	           manifest_json, encryption_algorithm, storage_backend, worker_id, local_path,
 	           created_at, updated_at)
-	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'age-x25519', $11, $12, $13, $14, $15, $16)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	          RETURNING id, tenant_id, source_id, job_id, status, size_bytes, started_at, finished_at, duration_ms,
 	                    manifest_json, encryption_algorithm, encryption_key_id, encryption_recipient,
 	                    storage_backend, worker_id, local_path, bucket, object_key, etag,
@@ -627,19 +627,21 @@ type Schedule struct {
 	Timezone        string          `json:"timezone"`
 	Status          string          `json:"status"`
 	RetentionPolicy json.RawMessage `json:"retention_policy"`
+	LastRunAt       *time.Time      `json:"last_run_at,omitempty"`
+	NextRunAt       *time.Time      `json:"next_run_at,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 // GetScheduleForSource retrieves the schedule for a specific source
 func (r *Repository) GetScheduleForSource(ctx context.Context, sourceID string) (*Schedule, error) {
-	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
 	          FROM schedules WHERE source_id = $1`
 
 	var schedule Schedule
 	err := r.db.QueryRowContext(ctx, query, sourceID).Scan(
 		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
-		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schedule: %w", err)
@@ -650,7 +652,7 @@ func (r *Repository) GetScheduleForSource(ctx context.Context, sourceID string) 
 
 // ListAllSchedules retrieves all schedules (for retention evaluation)
 func (r *Repository) ListAllSchedules(ctx context.Context) ([]*Schedule, error) {
-	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
 	          FROM schedules WHERE status = 'enabled'`
 
 	rows, err := r.db.QueryContext(ctx, query)
@@ -664,7 +666,7 @@ func (r *Repository) ListAllSchedules(ctx context.Context) ([]*Schedule, error) 
 		var schedule Schedule
 		err := rows.Scan(
 			&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
-			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan schedule: %w", err)
@@ -794,7 +796,7 @@ func (r *Repository) UpdateScheduleRetention(ctx context.Context, scheduleID str
 
 // ListSchedulesByTenant retrieves all schedules for a specific tenant
 func (r *Repository) ListSchedulesByTenant(ctx context.Context, tenantID string) ([]*Schedule, error) {
-	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
 	          FROM schedules WHERE tenant_id = $1 ORDER BY created_at DESC`
 
 	rows, err := r.db.QueryContext(ctx, query, tenantID)
@@ -808,7 +810,7 @@ func (r *Repository) ListSchedulesByTenant(ctx context.Context, tenantID string)
 		var schedule Schedule
 		err := rows.Scan(
 			&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
-			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan schedule: %w", err)
@@ -821,13 +823,13 @@ func (r *Repository) ListSchedulesByTenant(ctx context.Context, tenantID string)
 
 // GetSchedule retrieves a schedule by ID
 func (r *Repository) GetSchedule(ctx context.Context, scheduleID string) (*Schedule, error) {
-	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
 	          FROM schedules WHERE id = $1`
 
 	var schedule Schedule
 	err := r.db.QueryRowContext(ctx, query, scheduleID).Scan(
 		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
-		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schedule: %w", err)
@@ -1393,7 +1395,7 @@ func (r *Repository) DeleteCredential(ctx context.Context, credentialID string) 
 
 // ListAllSchedulesAdmin retrieves all schedules across all tenants (admin only)
 func (r *Repository) ListAllSchedulesAdmin(ctx context.Context) ([]*Schedule, error) {
-	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
 	          FROM schedules ORDER BY created_at DESC`
 
 	rows, err := r.db.QueryContext(ctx, query)
@@ -1407,7 +1409,7 @@ func (r *Repository) ListAllSchedulesAdmin(ctx context.Context) ([]*Schedule, er
 		var schedule Schedule
 		err := rows.Scan(
 			&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
-			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan schedule: %w", err)
@@ -1426,4 +1428,116 @@ func (r *Repository) DeleteSchedule(ctx context.Context, scheduleID string) erro
 		return fmt.Errorf("failed to delete schedule: %w", err)
 	}
 	return nil
+}
+
+// ========== Backup Scheduler ==========
+
+// GetDueSchedules retrieves all enabled schedules that are due to run
+func (r *Repository) GetDueSchedules(ctx context.Context, now time.Time) ([]*Schedule, error) {
+	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
+	          FROM schedules 
+	          WHERE status = 'enabled' 
+	          AND (next_run_at IS NULL OR next_run_at <= $1)
+	          ORDER BY next_run_at ASC NULLS FIRST`
+
+	rows, err := r.db.QueryContext(ctx, query, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get due schedules: %w", err)
+	}
+	defer rows.Close()
+
+	var schedules []*Schedule
+	for rows.Next() {
+		var schedule Schedule
+		err := rows.Scan(
+			&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
+			&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan schedule: %w", err)
+		}
+		schedules = append(schedules, &schedule)
+	}
+
+	return schedules, nil
+}
+
+// UpdateScheduleRunTimes updates the last_run_at and next_run_at for a schedule
+func (r *Repository) UpdateScheduleRunTimes(ctx context.Context, scheduleID string, lastRunAt, nextRunAt time.Time) error {
+	query := `UPDATE schedules SET last_run_at = $2, next_run_at = $3, updated_at = $4 WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, scheduleID, lastRunAt, nextRunAt, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to update schedule run times: %w", err)
+	}
+	return nil
+}
+
+// ========== Admin Snapshot Management ==========
+
+// AdminSnapshot includes snapshot with source and tenant info for admin views
+type AdminSnapshot struct {
+	ID                string     `json:"id"`
+	TenantID          string     `json:"tenant_id"`
+	TenantName        string     `json:"tenant_name"`
+	SourceID          string     `json:"source_id"`
+	SourceName        string     `json:"source_name"`
+	SourceType        string     `json:"source_type"`
+	JobID             *string    `json:"job_id,omitempty"`
+	Status            string     `json:"status"`
+	SizeBytes         int64      `json:"size_bytes"`
+	StartedAt         *time.Time `json:"started_at,omitempty"`
+	FinishedAt        *time.Time `json:"finished_at,omitempty"`
+	DurationMs        *int64     `json:"duration_ms,omitempty"`
+	StorageBackend    string     `json:"storage_backend"`
+	WorkerID          *string    `json:"worker_id,omitempty"`
+	DownloadToken     *string    `json:"download_token,omitempty"`
+	DownloadExpiresAt *time.Time `json:"download_expires_at,omitempty"`
+	DownloadURL       *string    `json:"download_url,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// ListAllSnapshotsAdmin retrieves all snapshots across all tenants with source and tenant info (admin only)
+func (r *Repository) ListAllSnapshotsAdmin(ctx context.Context, limit int) ([]*AdminSnapshot, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `SELECT 
+	          s.id, s.tenant_id, t.name as tenant_name, s.source_id, src.name as source_name, src.type as source_type,
+	          s.job_id, s.status, s.size_bytes, s.started_at, s.finished_at, s.duration_ms,
+	          s.storage_backend, s.worker_id, s.download_token, s.download_expires_at, s.download_url,
+	          s.created_at, s.updated_at
+	          FROM snapshots s
+	          LEFT JOIN tenants t ON s.tenant_id = t.id
+	          LEFT JOIN sources src ON s.source_id = src.id
+	          ORDER BY s.created_at DESC
+	          LIMIT $1`
+
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []*AdminSnapshot
+	for rows.Next() {
+		var snap AdminSnapshot
+		var tenantName, sourceName, sourceType sql.NullString
+		err := rows.Scan(
+			&snap.ID, &snap.TenantID, &tenantName, &snap.SourceID, &sourceName, &sourceType,
+			&snap.JobID, &snap.Status, &snap.SizeBytes, &snap.StartedAt, &snap.FinishedAt, &snap.DurationMs,
+			&snap.StorageBackend, &snap.WorkerID, &snap.DownloadToken, &snap.DownloadExpiresAt, &snap.DownloadURL,
+			&snap.CreatedAt, &snap.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan snapshot: %w", err)
+		}
+		snap.TenantName = tenantName.String
+		snap.SourceName = sourceName.String
+		snap.SourceType = sourceType.String
+		snapshots = append(snapshots, &snap)
+	}
+
+	return snapshots, nil
 }

@@ -134,8 +134,9 @@ function formatRetention(schedule: Schedule): string {
   }
 }
 
-function formatDate(date: string): string {
-  return new Date(date).toLocaleDateString()
+function formatDateTime(date: string | null | undefined): string {
+  if (!date) return 'Never'
+  return new Date(date).toLocaleString()
 }
 
 // Dialog handlers
@@ -334,9 +335,10 @@ async function toggleStatus(schedule: Schedule) {
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Source</th>
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Tenant</th>
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Schedule</th>
+                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Last Run</th>
+                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Next Run</th>
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Retention</th>
                 <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Status</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Created</th>
                 <th class="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
@@ -357,6 +359,12 @@ async function toggleStatus(schedule: Schedule) {
                   <div class="text-xs text-muted-foreground">{{ schedule.timezone }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
+                  <div class="text-sm text-muted-foreground">{{ formatDateTime(schedule.last_run_at) }}</div>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                  <div class="text-sm text-muted-foreground">{{ formatDateTime(schedule.next_run_at) }}</div>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm">{{ formatRetention(schedule) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
@@ -371,9 +379,6 @@ async function toggleStatus(schedule: Schedule) {
                   >
                     {{ schedule.status === 'enabled' ? 'Enabled' : 'Disabled' }}
                   </button>
-                </td>
-                <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm text-muted-foreground">{{ formatDate(schedule.created_at) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
                   <div class="flex justify-end gap-2">

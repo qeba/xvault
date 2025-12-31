@@ -203,6 +203,10 @@ func main() {
 	admin.Put("/schedules/:id", h.HandleUpdateScheduleAdmin)
 	admin.Delete("/schedules/:id", h.HandleDeleteScheduleAdmin)
 
+	// Snapshot management (admin only)
+	admin.Get("/snapshots", h.HandleListSnapshotsAdmin)
+	admin.Get("/snapshots/:id", h.HandleGetSnapshotAdmin)
+
 	// Internal/Worker routes
 	internal := app.Group("/internal")
 
@@ -239,9 +243,49 @@ func main() {
 	}
 	go startRetentionScheduler(svc, intervalHours)
 
+	// Start backup scheduler in background
+	backupSchedulerInterval := getenv("BACKUP_SCHEDULER_INTERVAL_SECONDS", "60")
+	schedulerInterval, err := time.ParseDuration(backupSchedulerInterval + "s")
+	if err != nil {
+		log.Printf("invalid BACKUP_SCHEDULER_INTERVAL_SECONDS, using default 60s: %v", err)
+		schedulerInterval = 60 * time.Second
+	}
+	go startBackupScheduler(svc, schedulerInterval)
+
 	log.Printf("hub listening on %s", addr)
 	if err := app.Listen(addr); err != nil {
 		log.Fatalf("hub server error: %v", err)
+	}
+}
+
+// startBackupScheduler runs periodic backup schedule processing
+func startBackupScheduler(svc *service.Service, interval time.Duration) {
+	log.Printf("starting backup scheduler (interval: %v)", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Run once on startup after a short delay
+	time.Sleep(10 * time.Second)
+	runBackupScheduler(svc)
+
+	for range ticker.C {
+		runBackupScheduler(svc)
+	}
+}
+
+// runBackupScheduler processes due schedules and enqueues backup jobs
+func runBackupScheduler(svc *service.Service) {
+	ctx, cancel := contextWithTimeout(1 * time.Minute)
+	defer cancel()
+
+	jobsCreated, err := svc.ProcessDueSchedules(ctx)
+	if err != nil {
+		log.Printf("backup scheduler error: %v", err)
+		return
+	}
+
+	if jobsCreated > 0 {
+		log.Printf("backup scheduler: created %d backup job(s)", jobsCreated)
 	}
 }
 

@@ -1272,3 +1272,45 @@ func (h *Handlers) HandleDeleteScheduleAdmin(c *fiber.Ctx) error {
 
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
+
+// Admin / Snapshot handlers
+
+// HandleListSnapshotsAdmin handles GET /api/v1/admin/snapshots
+// Returns all snapshots across all tenants with source/tenant info (admin only)
+func (h *Handlers) HandleListSnapshotsAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	limit := c.QueryInt("limit", 100)
+	if limit > 500 {
+		limit = 500
+	}
+
+	snapshots, err := h.service.ListAllSnapshotsAdmin(ctx, limit)
+	if err != nil {
+		log.Printf("failed to list all snapshots: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list snapshots")
+	}
+
+	return c.JSON(fiber.Map{"snapshots": snapshots})
+}
+
+// HandleGetSnapshotAdmin handles GET /api/v1/admin/snapshots/:id
+// Returns a specific snapshot (admin only)
+func (h *Handlers) HandleGetSnapshotAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	id := c.Params("id")
+	if id == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
+	}
+
+	snapshot, err := h.service.GetSnapshot(ctx, id)
+	if err != nil {
+		log.Printf("failed to get snapshot: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Snapshot not found")
+	}
+
+	return c.JSON(snapshot)
+}

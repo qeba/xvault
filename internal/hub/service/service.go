@@ -18,6 +18,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"github.com/redis/go-redis/v9"
+	"github.com/robfig/cron/v3"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -1704,4 +1705,138 @@ func (s *Service) CreateScheduleAdmin(ctx context.Context, req CreateScheduleReq
 // DeleteSchedule deletes a schedule (admin only)
 func (s *Service) DeleteSchedule(ctx context.Context, scheduleID string) error {
 	return s.repo.DeleteSchedule(ctx, scheduleID)
+}
+
+// ========== Admin Snapshot Management ==========
+
+// ListAllSnapshotsAdmin returns all snapshots across all tenants with source/tenant info (admin only)
+func (s *Service) ListAllSnapshotsAdmin(ctx context.Context, limit int) ([]*repository.AdminSnapshot, error) {
+	return s.repo.ListAllSnapshotsAdmin(ctx, limit)
+}
+
+// ========== Backup Scheduler ==========
+
+// ProcessDueSchedules checks for schedules that are due to run and enqueues backup jobs
+func (s *Service) ProcessDueSchedules(ctx context.Context) (int, error) {
+	now := time.Now()
+
+	// Get all schedules that are due
+	schedules, err := s.repo.GetDueSchedules(ctx, now)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get due schedules: %w", err)
+	}
+
+	jobsCreated := 0
+	for _, schedule := range schedules {
+		// Skip if source is not active
+		source, err := s.repo.GetSource(ctx, schedule.SourceID)
+		if err != nil {
+			log.Printf("scheduler: failed to get source %s for schedule %s: %v", schedule.SourceID, schedule.ID, err)
+			continue
+		}
+		if source.Status != "active" {
+			log.Printf("scheduler: skipping schedule %s - source %s is not active", schedule.ID, schedule.SourceID)
+			continue
+		}
+
+		// Enqueue backup job
+		job, err := s.EnqueueScheduledBackup(ctx, schedule)
+		if err != nil {
+			log.Printf("scheduler: failed to enqueue backup for schedule %s: %v", schedule.ID, err)
+			continue
+		}
+
+		log.Printf("scheduler: enqueued backup job %s for schedule %s (source: %s)", job.ID, schedule.ID, schedule.SourceID)
+		jobsCreated++
+
+		// Calculate next run time
+		nextRun, err := s.CalculateNextRun(schedule, now)
+		if err != nil {
+			log.Printf("scheduler: failed to calculate next run for schedule %s: %v", schedule.ID, err)
+			continue
+		}
+
+		// Update schedule with last and next run times
+		if err := s.repo.UpdateScheduleRunTimes(ctx, schedule.ID, now, nextRun); err != nil {
+			log.Printf("scheduler: failed to update run times for schedule %s: %v", schedule.ID, err)
+		}
+	}
+
+	return jobsCreated, nil
+}
+
+// EnqueueScheduledBackup creates and enqueues a backup job for a scheduled backup
+func (s *Service) EnqueueScheduledBackup(ctx context.Context, schedule *repository.Schedule) (*repository.Job, error) {
+	source, err := s.repo.GetSource(ctx, schedule.SourceID)
+	if err != nil {
+		return nil, fmt.Errorf("source not found: %w", err)
+	}
+
+	// Build job payload
+	payload := types.JobPayload{
+		SourceID:     schedule.SourceID,
+		CredentialID: source.CredentialID,
+		SourceConfig: source.Config,
+	}
+
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Scheduled jobs have normal priority (5)
+	priority := 5
+
+	job, err := s.repo.CreateJob(ctx, schedule.TenantID, types.JobTypeBackup, &schedule.SourceID, payloadJSON, priority)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create job: %w", err)
+	}
+
+	// Enqueue to Redis
+	jobMsg := map[string]any{
+		"job_id":      job.ID,
+		"tenant_id":   schedule.TenantID,
+		"type":        "backup",
+		"priority":    priority,
+		"schedule_id": schedule.ID,
+		"created_at":  job.CreatedAt.Format(time.RFC3339),
+	}
+
+	jobMsgJSON, err := json.Marshal(jobMsg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal job message: %w", err)
+	}
+
+	if err := s.redis.LPush(ctx, JobQueueKey, jobMsgJSON).Err(); err != nil {
+		return nil, fmt.Errorf("failed to enqueue job: %w", err)
+	}
+
+	return job, nil
+}
+
+// CalculateNextRun calculates the next run time for a schedule based on cron or interval
+func (s *Service) CalculateNextRun(schedule *repository.Schedule, from time.Time) (time.Time, error) {
+	// Load timezone
+	loc, err := time.LoadLocation(schedule.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	fromInTz := from.In(loc)
+
+	// If using interval_minutes
+	if schedule.IntervalMinutes != nil && *schedule.IntervalMinutes > 0 {
+		return fromInTz.Add(time.Duration(*schedule.IntervalMinutes) * time.Minute).UTC(), nil
+	}
+
+	// If using cron
+	if schedule.Cron != nil && *schedule.Cron != "" {
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		cronSchedule, err := parser.Parse(*schedule.Cron)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid cron expression: %w", err)
+		}
+		return cronSchedule.Next(fromInTz).UTC(), nil
+	}
+
+	return time.Time{}, fmt.Errorf("schedule has neither cron nor interval_minutes")
 }

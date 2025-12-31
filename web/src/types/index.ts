@@ -158,6 +158,29 @@ export interface Snapshot {
   manifest: Record<string, unknown> | null
 }
 
+// Admin Snapshot type (includes tenant/source info)
+export interface AdminSnapshot {
+  id: string
+  tenant_id: string
+  tenant_name: string
+  source_id: string
+  source_name: string
+  source_type: string
+  job_id?: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  size_bytes: number
+  started_at?: string
+  finished_at?: string
+  duration_ms?: number
+  storage_backend: string
+  worker_id?: string
+  download_token?: string
+  download_expires_at?: string
+  download_url?: string
+  created_at: string
+  updated_at: string
+}
+
 // Job types
 export type JobStatus = 'pending' | 'claimed' | 'running' | 'completed' | 'failed'
 export type JobType = 'backup' | 'restore' | 'delete' | 'retention_eval'
@@ -195,6 +218,8 @@ export interface Schedule {
     keep_last_n?: number
     keep_within_duration?: string
   }
+  last_run_at?: string | null
+  next_run_at?: string | null
   created_at: string
   updated_at: string
 }

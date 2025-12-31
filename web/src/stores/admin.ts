@@ -1,13 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/lib/api'
-import type { User, Tenant, Setting, Source, Schedule, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest, TestConnectionRequest, TestConnectionResult, AdminCreateScheduleRequest, AdminUpdateScheduleRequest } from '@/types'
+import type { User, Tenant, Setting, Source, Schedule, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest, TestConnectionRequest, TestConnectionResult, AdminCreateScheduleRequest, AdminUpdateScheduleRequest, AdminSnapshot } from '@/types'
 
 export const useAdminStore = defineStore('admin', () => {
   const users = ref<User[]>([])
   const tenants = ref<Tenant[]>([])
   const sources = ref<Source[]>([])
   const schedules = ref<Schedule[]>([])
+  const snapshots = ref<AdminSnapshot[]>([])
   const settings = ref<Setting[]>([])
   const isLoading = ref(false)
   const error = ref<string | null>(null)
@@ -433,12 +434,44 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  // Snapshots management (admin)
+  async function fetchSnapshots(limit: number = 100): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ snapshots: AdminSnapshot[] }>(`/v1/admin/snapshots?limit=${limit}`)
+      snapshots.value = response.data.snapshots || []
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch snapshots'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchSnapshot(id: string): Promise<AdminSnapshot> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<AdminSnapshot>(`/v1/admin/snapshots/${id}`)
+      return response.data
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch snapshot'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     // State
     users,
     tenants,
     sources,
     schedules,
+    snapshots,
     settings,
     isLoading,
     error,
@@ -468,6 +501,9 @@ export const useAdminStore = defineStore('admin', () => {
     createSchedule,
     updateSchedule,
     deleteSchedule,
+    // Snapshots
+    fetchSnapshots,
+    fetchSnapshot,
     // Settings
     fetchSettings,
     fetchSetting,

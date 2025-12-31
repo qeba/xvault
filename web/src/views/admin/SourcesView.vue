@@ -466,16 +466,23 @@ function onTypeChange(type: SourceType) {
     <div 
       v-if="triggerResult" 
       :class="[
-        'fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 max-w-sm',
+        'fixed bottom-4 right-4 p-4 rounded-lg shadow-lg z-50 max-w-md',
         triggerResult.success 
           ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 border border-green-200 dark:border-green-800' 
           : 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 border border-red-200 dark:border-red-800'
       ]"
     >
-      <div class="flex items-center justify-between">
+      <div class="flex items-start justify-between">
         <div>
           <div class="font-medium">{{ triggerResult.success ? 'Backup Started' : 'Backup Failed' }}</div>
           <div class="text-sm opacity-80">{{ triggerResult.message }}</div>
+          <router-link 
+            v-if="triggerResult.success" 
+            to="/admin/snapshots" 
+            class="text-sm underline mt-1 inline-block hover:opacity-70"
+          >
+            View in Snapshots →
+          </router-link>
         </div>
         <button @click="triggerResult = null" class="ml-4 p-1 hover:opacity-70">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
