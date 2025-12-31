@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useAdminStore } from '@/stores/admin'
-import type { Source, SourceType, SourceConfig } from '@/types'
+import type { Source, SourceType, SourceConfig, LogEntry } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
@@ -9,6 +9,7 @@ import Input from '@/components/ui/input/Input.vue'
 import Label from '@/components/ui/label/Label.vue'
 import Dialog from '@/components/ui/dialog/Dialog.vue'
 import { Select, type SelectOption } from '@/components/ui/select'
+import { LogViewer } from '@/components/ui/log-viewer'
 
 const adminStore = useAdminStore()
 
@@ -31,6 +32,12 @@ const testResult = ref<{ success: boolean; message: string; details?: string } |
 const triggerResult = ref<{ success: boolean; message: string } | null>(null)
 const editingSource = ref<Source | null>(null)
 const deletingSource = ref<Source | null>(null)
+
+// Logs state
+const showLogsDialog = ref(false)
+const selectedSourceLogs = ref<LogEntry[]>([])
+const isLoadingLogs = ref(false)
+const selectedSourceForLogs = ref<Source | null>(null)
 
 // Source type options
 const sourceTypeOptions: SelectOption[] = [
@@ -425,6 +432,27 @@ async function handleTriggerBackup(source: Source) {
   }
 }
 
+async function openLogsDialog(source: Source) {
+  selectedSourceForLogs.value = source
+  isLoadingLogs.value = true
+  showLogsDialog.value = true
+  
+  try {
+    selectedSourceLogs.value = await adminStore.fetchLogsForSource(source.id, 200)
+  } catch (error) {
+    console.error('Failed to fetch logs:', error)
+  } finally {
+    isLoadingLogs.value = false
+  }
+}
+
+function refreshLogs() {
+  if (selectedSourceForLogs.value) {
+    openLogsDialog(selectedSourceForLogs.value)
+  }
+}
+
+
 // Watch type changes to set default ports
 function onTypeChange(type: SourceType) {
   createForm.value.type = type
@@ -607,6 +635,9 @@ function onTypeChange(type: SourceType) {
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
                   <div class="flex justify-end gap-2">
+                    <Button variant="ghost" size="sm" @click="openLogsDialog(source)">
+                      Logs
+                    </Button>
                     <Button 
                       variant="secondary" 
                       size="sm" 
@@ -1017,6 +1048,31 @@ function onTypeChange(type: SourceType) {
             {{ isDeleting ? 'Deleting...' : 'Delete Source' }}
           </Button>
         </div>
+      </div>
+    </Dialog>
+
+    <!-- Logs Dialog -->
+    <Dialog v-model:open="showLogsDialog" size="xl">
+      <div class="p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-lg font-semibold">Source Logs</h2>
+            <p v-if="selectedSourceForLogs" class="text-sm text-muted-foreground">
+              {{ selectedSourceForLogs.name }} ({{ getTenantName(selectedSourceForLogs.tenant_id) }})
+            </p>
+          </div>
+          <Button variant="outline" size="sm" @click="showLogsDialog = false">
+            Close
+          </Button>
+        </div>
+        
+        <LogViewer
+          v-if="selectedSourceForLogs"
+          :logs="selectedSourceLogs"
+          :is-loading="isLoadingLogs"
+          :title="`Logs for source ${selectedSourceForLogs.name}`"
+          @refresh="refreshLogs"
+        />
       </div>
     </Dialog>
   </div>

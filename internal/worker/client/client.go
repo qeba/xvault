@@ -222,6 +222,33 @@ func (c *HubClient) SendHeartbeat(ctx context.Context, req WorkerHeartbeatReques
 	return nil
 }
 
+// CreateLog creates a log entry in the Hub
+func (c *HubClient) CreateLog(ctx context.Context, req LogRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal log request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/internal/logs", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create log request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to send log: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("create log failed: status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
 // Request/Response types matching Hub API
 
 type JobClaimRequest struct {
@@ -229,12 +256,12 @@ type JobClaimRequest struct {
 }
 
 type JobClaimResponse struct {
-	JobID          string          `json:"job_id"`
-	TenantID       string          `json:"tenant_id"`
-	SourceID       string          `json:"source_id,omitempty"`
-	Type           string          `json:"type"`
-	Payload        JobPayload      `json:"payload"`
-	LeaseExpiresAt string          `json:"lease_expires_at"`
+	JobID          string     `json:"job_id"`
+	TenantID       string     `json:"tenant_id"`
+	SourceID       string     `json:"source_id,omitempty"`
+	Type           string     `json:"type"`
+	Payload        JobPayload `json:"payload"`
+	LeaseExpiresAt string     `json:"lease_expires_at"`
 }
 
 type JobPayload struct {
@@ -246,11 +273,11 @@ type JobPayload struct {
 }
 
 type JobCompleteRequest struct {
-	WorkerID string           `json:"worker_id"`
-	Status   string           `json:"status"`
-	Error    string           `json:"error,omitempty"`
-	Snapshot *SnapshotResult  `json:"snapshot,omitempty"`
-	Restore  *RestoreResult   `json:"restore,omitempty"`
+	WorkerID string          `json:"worker_id"`
+	Status   string          `json:"status"`
+	Error    string          `json:"error,omitempty"`
+	Snapshot *SnapshotResult `json:"snapshot,omitempty"`
+	Restore  *RestoreResult  `json:"restore,omitempty"`
 }
 
 type RestoreResult struct {
@@ -293,12 +320,12 @@ type CredentialResponse struct {
 }
 
 type TenantKeyResponse struct {
-	ID                 string `json:"id"`
-	TenantID           string `json:"tenant_id"`
-	Algorithm          string `json:"algorithm"`
-	PublicKey          string `json:"public_key"`
+	ID                  string `json:"id"`
+	TenantID            string `json:"tenant_id"`
+	Algorithm           string `json:"algorithm"`
+	PublicKey           string `json:"public_key"`
 	EncryptedPrivateKey string `json:"encrypted_private_key"`
-	KeyStatus          string `json:"key_status"`
+	KeyStatus           string `json:"key_status"`
 }
 
 type TenantPrivateKeyResponse struct {
@@ -316,4 +343,15 @@ type WorkerRegisterRequest struct {
 type WorkerHeartbeatRequest struct {
 	WorkerID string `json:"worker_id"`
 	Status   string `json:"status"`
+}
+
+type LogRequest struct {
+	Level       string          `json:"level"`
+	Message     string          `json:"message"`
+	WorkerID    *string         `json:"worker_id,omitempty"`
+	JobID       *string         `json:"job_id,omitempty"`
+	SnapshotID  *string         `json:"snapshot_id,omitempty"`
+	SourceID    *string         `json:"source_id,omitempty"`
+	ScheduleID  *string         `json:"schedule_id,omitempty"`
+	Details     json.RawMessage `json:"details,omitempty"`
 }

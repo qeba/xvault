@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/lib/api'
-import type { User, Tenant, Setting, Source, Schedule, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest, TestConnectionRequest, TestConnectionResult, AdminCreateScheduleRequest, AdminUpdateScheduleRequest, AdminSnapshot } from '@/types'
+import type { User, Tenant, Setting, Source, Schedule, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest, TestConnectionRequest, TestConnectionResult, AdminCreateScheduleRequest, AdminUpdateScheduleRequest, AdminSnapshot, LogEntry } from '@/types'
 
 export const useAdminStore = defineStore('admin', () => {
   const users = ref<User[]>([])
@@ -465,6 +465,39 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  // Logs management
+  async function fetchLogsForSnapshot(snapshotId: string, limit: number = 100): Promise<LogEntry[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ logs: LogEntry[] }>(`/v1/admin/snapshots/${snapshotId}/logs?limit=${limit}`)
+      return response.data.logs || []
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch logs'
+      console.error('Failed to fetch logs for snapshot:', err)
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchLogsForSource(sourceId: string, limit: number = 100): Promise<LogEntry[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ logs: LogEntry[] }>(`/v1/admin/sources/${sourceId}/logs?limit=${limit}`)
+      return response.data.logs || []
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch logs'
+      console.error('Failed to fetch logs for source:', err)
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     // State
     users,
@@ -511,5 +544,8 @@ export const useAdminStore = defineStore('admin', () => {
     // Retention
     runRetentionForAllSources,
     runRetentionForSource,
+    // Logs
+    fetchLogsForSnapshot,
+    fetchLogsForSource,
   }
 })

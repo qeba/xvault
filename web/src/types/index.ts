@@ -321,3 +321,26 @@ export interface RestoreJob {
   completed_at: string | null
   error: string | null
 }
+
+// Log types
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+
+export interface LogEntry {
+  id: string
+  timestamp: string
+  level: LogLevel
+  message: string
+  worker_id?: string
+  job_id?: string
+  snapshot_id?: string
+  source_id?: string
+  schedule_id?: string
+  details?: Record<string, unknown>
+}
+
+export interface LogsResponse {
+  logs: LogEntry[]
+  total: number
+  limit: number
+  offset: number
+}

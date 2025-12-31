@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useAdminStore } from '@/stores/admin'
-import type { AdminSnapshot } from '@/types'
+import type { AdminSnapshot, LogEntry } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
 import Input from '@/components/ui/input/Input.vue'
 import Dialog from '@/components/ui/dialog/Dialog.vue'
 import { Select, type SelectOption } from '@/components/ui/select'
+import { LogViewer } from '@/components/ui/log-viewer'
 import api from '@/lib/api'
 
 const adminStore = useAdminStore()
@@ -18,7 +19,10 @@ const tenantFilter = ref('')
 const sourceFilter = ref('')
 const isLoading = ref(true)
 const showDetailDialog = ref(false)
+const showLogsDialog = ref(false)
 const selectedSnapshot = ref<AdminSnapshot | null>(null)
+const selectedSnapshotLogs = ref<LogEntry[]>([])
+const isLoadingLogs = ref(false)
 const isDownloading = ref(false)
 const downloadResult = ref<{ success: boolean; message: string; url?: string } | null>(null)
 
@@ -26,8 +30,8 @@ const downloadResult = ref<{ success: boolean; message: string; url?: string } |
 const statusFilterOptions: SelectOption[] = [
   { label: 'All Status', value: '' },
   { label: 'Completed', value: 'completed' },
-  { label: 'Pending', value: 'pending' },
   { label: 'Running', value: 'running' },
+  { label: 'Queued', value: 'queued' },
   { label: 'Failed', value: 'failed' },
 ]
 
@@ -123,6 +127,8 @@ function getStatusBadgeClass(status: string): string {
       return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
     case 'failed':
       return 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200'
+    case 'queued':
+      return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
     case 'pending':
     case 'running':
       return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
@@ -174,6 +180,26 @@ function openDetailDialog(snapshot: AdminSnapshot) {
   selectedSnapshot.value = snapshot
   downloadResult.value = null
   showDetailDialog.value = true
+}
+
+async function openLogsDialog(snapshot: AdminSnapshot) {
+  selectedSnapshot.value = snapshot
+  isLoadingLogs.value = true
+  showLogsDialog.value = true
+  
+  try {
+    selectedSnapshotLogs.value = await adminStore.fetchLogsForSnapshot(snapshot.id, 200)
+  } catch (error) {
+    console.error('Failed to fetch logs:', error)
+  } finally {
+    isLoadingLogs.value = false
+  }
+}
+
+function refreshLogs() {
+  if (selectedSnapshot.value) {
+    openLogsDialog(selectedSnapshot.value)
+  }
 }
 
 async function handleDownload(snapshot: AdminSnapshot) {
@@ -358,8 +384,15 @@ async function handleRefresh() {
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap text-right">
                   <div class="flex justify-end gap-2">
-                    <Button 
-                      variant="ghost" 
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      @click="openLogsDialog(snapshot)"
+                    >
+                      Logs
+                    </Button>
+                    <Button
+                      variant="ghost"
                       size="sm"
                       @click="openDetailDialog(snapshot)"
                     >
@@ -499,6 +532,31 @@ async function handleRefresh() {
             Close
           </Button>
         </div>
+      </div>
+    </Dialog>
+
+    <!-- Logs Dialog -->
+    <Dialog v-model:open="showLogsDialog" size="xl">
+      <div class="p-6">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-lg font-semibold">Snapshot Logs</h2>
+            <p v-if="selectedSnapshot" class="text-sm text-muted-foreground">
+              {{ selectedSnapshot.source_name }} ({{ selectedSnapshot.tenant_name }})
+            </p>
+          </div>
+          <Button variant="outline" size="sm" @click="showLogsDialog = false">
+            Close
+          </Button>
+        </div>
+        
+        <LogViewer
+          v-if="selectedSnapshot"
+          :logs="selectedSnapshotLogs"
+          :is-loading="isLoadingLogs"
+          :title="`Logs for ${selectedSnapshot.source_name}`"
+          @refresh="refreshLogs"
+        />
       </div>
     </Dialog>
   </div>

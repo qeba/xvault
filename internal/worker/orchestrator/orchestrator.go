@@ -35,6 +35,24 @@ func NewOrchestrator(workerID string, hubClient *client.HubClient, storageBase, 
 	}
 }
 
+// logToHub sends a log entry to the hub
+func (o *Orchestrator) logToHub(ctx context.Context, level, message string, jobID, snapshotID, sourceID, scheduleID *string, details map[string]any) {
+	detailsJSON, _ := json.Marshal(details)
+	req := client.LogRequest{
+		Level:      level,
+		Message:    message,
+		WorkerID:   &o.workerID,
+		JobID:      jobID,
+		SnapshotID: snapshotID,
+		SourceID:   sourceID,
+		ScheduleID: scheduleID,
+		Details:    detailsJSON,
+	}
+	if err := o.hubClient.CreateLog(ctx, req); err != nil {
+		log.Printf("failed to send log to hub: %v", err)
+	}
+}
+
 // Run starts the worker job loop
 func (o *Orchestrator) Run(ctx context.Context) error {
 	log.Printf("worker %s starting job loop", o.workerID)
@@ -109,6 +127,10 @@ func (o *Orchestrator) processNextJob(ctx context.Context) error {
 	}
 
 	log.Printf("worker %s claimed job %s (type: %s, tenant: %s)", o.workerID, claimResp.JobID, claimResp.Type, claimResp.TenantID)
+	o.logToHub(ctx, "info", fmt.Sprintf("claimed job %s (type: %s)", claimResp.JobID, claimResp.Type), &claimResp.JobID, nil, &claimResp.SourceID, nil, map[string]any{
+		"tenant_id": claimResp.TenantID,
+		"job_type":  claimResp.Type,
+	})
 
 	// Process the job
 	var completeReq client.JobCompleteRequest
@@ -142,8 +164,15 @@ func (o *Orchestrator) processNextJob(ctx context.Context) error {
 	// Log job completion with error details if failed
 	if completeReq.Error != "" {
 		log.Printf("worker %s completed job %s with status: %s, error: %s", o.workerID, claimResp.JobID, completeReq.Status, completeReq.Error)
+		o.logToHub(ctx, "error", fmt.Sprintf("completed job %s with error: %s", claimResp.JobID, completeReq.Error), &claimResp.JobID, nil, nil, nil, map[string]any{
+			"status": completeReq.Status,
+			"error":  completeReq.Error,
+		})
 	} else {
 		log.Printf("worker %s completed job %s with status: %s", o.workerID, claimResp.JobID, completeReq.Status)
+		o.logToHub(ctx, "info", fmt.Sprintf("completed job %s successfully", claimResp.JobID), &claimResp.JobID, nil, nil, nil, map[string]any{
+			"status": completeReq.Status,
+		})
 	}
 	return nil
 }
@@ -155,6 +184,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Generate snapshot ID
 	snapshotID, err := storage.GenerateSnapshotID()
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to generate snapshot ID: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -165,6 +195,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Create temp directory
 	tempDir, err := o.storage.CreateTempDir(job.JobID)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to create temp directory: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -176,6 +207,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Parse source config
 	var sourceConfig types.SourceConfigSSH
 	if err := json.Unmarshal(job.Payload.SourceConfig, &sourceConfig); err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to parse source config: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -186,6 +218,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Fetch credential from hub
 	credResp, err := o.hubClient.GetCredential(ctx, job.Payload.CredentialID)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to get credential: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -197,6 +230,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// For v0, credentials are encrypted with platform KEK so workers can decrypt them
 	plaintext, err := crypto.DecryptFromStorage(credResp.Ciphertext, o.encryptionKEK)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to decrypt credential: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -209,6 +243,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Fetch tenant public key for encrypting the backup
 	keyResp, err := o.hubClient.GetTenantPublicKey(ctx, job.TenantID)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to get tenant public key: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -229,6 +264,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Connect and pull files
 	sftpClient, sshClient, err := sftpConn.Connect()
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to connect: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -241,6 +277,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	mirrorDir := tempDir + "/source-mirror"
 	stats, err := sftpConn.PullFiles(sftpClient, mirrorDir)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to pull files: %v", err), &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -249,11 +286,16 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	}
 
 	log.Printf("pulled %d files (%d bytes) from source", stats.FilesDownloaded, stats.TotalBytes)
+	o.logToHub(ctx, "info", fmt.Sprintf("pulled %d files (%d bytes) from source", stats.FilesDownloaded, stats.TotalBytes), &job.JobID, nil, &job.SourceID, nil, map[string]any{
+		"files_downloaded": stats.FilesDownloaded,
+		"total_bytes":      stats.TotalBytes,
+	})
 
 	// Package and encrypt
 	pkg := packager.NewPackager(keyResp.PublicKey)
 	pkgResult, err := pkg.PackageBackup(mirrorDir, snapshotID, job.TenantID, job.SourceID, job.JobID, o.workerID)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to package backup: %v", err), &job.JobID, &snapshotID, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -264,6 +306,10 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Write to local storage
 	localPath, sizeBytes, err := o.storage.WriteSnapshot(job.TenantID, job.SourceID, snapshotID, pkgResult.Artifact, pkgResult.Manifest)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to write snapshot: %v", err), &job.JobID, &snapshotID, &job.SourceID, nil, map[string]any{
+			"local_path": localPath,
+			"size_bytes": sizeBytes,
+		})
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -272,6 +318,10 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	}
 
 	log.Printf("snapshot %s written to %s (%d bytes)", snapshotID, localPath, sizeBytes)
+	o.logToHub(ctx, "info", fmt.Sprintf("snapshot %s written to %s (%d bytes)", snapshotID, localPath, sizeBytes), &job.JobID, &snapshotID, &job.SourceID, nil, map[string]any{
+		"local_path": localPath,
+		"size_bytes": sizeBytes,
+	})
 
 	// Build success response
 	finishTime := time.Now()
@@ -302,6 +352,7 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 func (o *Orchestrator) processDeleteSnapshotJob(ctx context.Context, job *client.JobClaimResponse) (client.JobCompleteRequest, error) {
 	// Extract snapshot ID from payload
 	if job.Payload.DeleteSnapshotID == nil || *job.Payload.DeleteSnapshotID == "" {
+		o.logToHub(ctx, "error", "delete_snapshot_id is required in payload", &job.JobID, nil, nil, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -312,10 +363,12 @@ func (o *Orchestrator) processDeleteSnapshotJob(ctx context.Context, job *client
 	snapshotID := *job.Payload.DeleteSnapshotID
 
 	log.Printf("worker %s deleting snapshot %s", o.workerID, snapshotID)
+	o.logToHub(ctx, "info", fmt.Sprintf("deleting snapshot %s", snapshotID), &job.JobID, &snapshotID, &job.SourceID, nil, nil)
 
-	// Delete the snapshot from local storage
+	// Delete snapshot from local storage
 	err := o.storage.DeleteSnapshot(job.TenantID, job.SourceID, snapshotID)
 	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to delete snapshot: %v", err), &job.JobID, &snapshotID, &job.SourceID, nil, nil)
 		return client.JobCompleteRequest{
 			WorkerID: o.workerID,
 			Status:   "failed",
@@ -324,6 +377,7 @@ func (o *Orchestrator) processDeleteSnapshotJob(ctx context.Context, job *client
 	}
 
 	log.Printf("worker %s successfully deleted snapshot %s", o.workerID, snapshotID)
+	o.logToHub(ctx, "info", fmt.Sprintf("successfully deleted snapshot %s", snapshotID), &job.JobID, &snapshotID, &job.SourceID, nil, nil)
 
 	return client.JobCompleteRequest{
 		WorkerID: o.workerID,

@@ -447,7 +447,12 @@ type Snapshot struct {
 
 // CreateSnapshot creates a new snapshot record
 func (r *Repository) CreateSnapshot(ctx context.Context, tenantID, sourceID, jobID string, result types.SnapshotResult) (*Snapshot, error) {
-	id := uuid.New().String()
+	// Use the snapshot ID provided by the worker to ensure logs reference the correct snapshot
+	id := result.SnapshotID
+	if id == "" {
+		// Fallback to generating a new ID if none provided (shouldn't happen normally)
+		id = uuid.New().String()
+	}
 	now := time.Now()
 
 	query := `INSERT INTO snapshots
@@ -636,7 +641,7 @@ type Schedule struct {
 // GetScheduleForSource retrieves the schedule for a specific source
 func (r *Repository) GetScheduleForSource(ctx context.Context, sourceID string) (*Schedule, error) {
 	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
-	          FROM schedules WHERE source_id = $1`
+	          FROM schedules WHERE source_id = $1::uuid`
 
 	var schedule Schedule
 	err := r.db.QueryRowContext(ctx, query, sourceID).Scan(
@@ -758,7 +763,7 @@ func (r *Repository) UpdateSchedule(ctx context.Context, scheduleID string, cron
 
 	query := `UPDATE schedules
 	          SET cron = $2, interval_minutes = $3, timezone = $4, status = $5, retention_policy = $6, updated_at = $7
-	          WHERE id = $1
+	          WHERE id = $1::uuid
 	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at`
 
 	var schedule Schedule
@@ -779,7 +784,7 @@ func (r *Repository) UpdateScheduleRetention(ctx context.Context, scheduleID str
 
 	query := `UPDATE schedules
 	          SET retention_policy = $2, updated_at = $3
-	          WHERE id = $1
+	          WHERE id = $1::uuid
 	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at`
 
 	var schedule Schedule
@@ -824,7 +829,7 @@ func (r *Repository) ListSchedulesByTenant(ctx context.Context, tenantID string)
 // GetSchedule retrieves a schedule by ID
 func (r *Repository) GetSchedule(ctx context.Context, scheduleID string) (*Schedule, error) {
 	query := `SELECT id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at
-	          FROM schedules WHERE id = $1`
+	          FROM schedules WHERE id = $1::uuid`
 
 	var schedule Schedule
 	err := r.db.QueryRowContext(ctx, query, scheduleID).Scan(
@@ -1464,7 +1469,7 @@ func (r *Repository) GetDueSchedules(ctx context.Context, now time.Time) ([]*Sch
 
 // UpdateScheduleRunTimes updates the last_run_at and next_run_at for a schedule
 func (r *Repository) UpdateScheduleRunTimes(ctx context.Context, scheduleID string, lastRunAt, nextRunAt time.Time) error {
-	query := `UPDATE schedules SET last_run_at = $2, next_run_at = $3, updated_at = $4 WHERE id = $1`
+	query := `UPDATE schedules SET last_run_at = $2, next_run_at = $3, updated_at = $4 WHERE id = $1::uuid`
 	_, err := r.db.ExecContext(ctx, query, scheduleID, lastRunAt, nextRunAt, time.Now())
 	if err != nil {
 		return fmt.Errorf("failed to update schedule run times: %w", err)
@@ -1540,4 +1545,279 @@ func (r *Repository) ListAllSnapshotsAdmin(ctx context.Context, limit int) ([]*A
 	}
 
 	return snapshots, nil
+}
+
+// ListAllSnapshotsAndJobsAdmin retrieves all snapshots and in-progress/failed jobs across all tenants (admin only)
+// This combines completed snapshots with queued/running/failed backup jobs to show the full status
+func (r *Repository) ListAllSnapshotsAndJobsAdmin(ctx context.Context, limit int) ([]*AdminSnapshot, error) {
+	if limit <= 0 {
+		limit = 200 // Allow more since we're combining jobs and snapshots
+	}
+
+	// UNION query: get snapshots AND jobs that don't have snapshots yet (queued, running, failed)
+	query := `
+		-- Completed snapshots
+		SELECT 
+			s.id, s.tenant_id, t.name as tenant_name, s.source_id, src.name as source_name, src.type::text as source_type,
+			s.job_id, s.status::text, s.size_bytes, s.started_at, s.finished_at, s.duration_ms,
+			s.storage_backend::text, s.worker_id, s.download_token, s.download_expires_at, s.download_url,
+			s.created_at, s.updated_at
+		FROM snapshots s
+		LEFT JOIN tenants t ON s.tenant_id = t.id
+		LEFT JOIN sources src ON s.source_id = src.id
+
+		UNION ALL
+
+		-- In-progress or failed jobs (backup type only) that don't have snapshots yet
+		SELECT 
+			j.id as id,
+			j.tenant_id,
+			t.name as tenant_name,
+			j.source_id,
+			src.name as source_name,
+			src.type::text as source_type,
+			j.id as job_id,
+			j.status::text,
+			0 as size_bytes,
+			j.started_at,
+			j.finished_at,
+			NULL::bigint as duration_ms,
+			NULL::text as storage_backend,
+			j.target_worker_id as worker_id,
+			NULL::text as download_token,
+			NULL::timestamp as download_expires_at,
+			NULL::text as download_url,
+			j.created_at,
+			j.updated_at
+		FROM jobs j
+		LEFT JOIN tenants t ON j.tenant_id = t.id
+		LEFT JOIN sources src ON j.source_id = src.id
+		WHERE j.type = 'backup' 
+			AND j.status IN ('queued', 'running', 'failed')
+			AND NOT EXISTS (
+				SELECT 1 FROM snapshots s2 WHERE s2.job_id = j.id
+			)
+
+		ORDER BY created_at DESC
+		LIMIT $1`
+
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list snapshots and jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []*AdminSnapshot
+	for rows.Next() {
+		var snap AdminSnapshot
+		var tenantName, sourceName, sourceType, storageBackend, sourceID sql.NullString
+		err := rows.Scan(
+			&snap.ID, &snap.TenantID, &tenantName, &sourceID, &sourceName, &sourceType,
+			&snap.JobID, &snap.Status, &snap.SizeBytes, &snap.StartedAt, &snap.FinishedAt, &snap.DurationMs,
+			&storageBackend, &snap.WorkerID, &snap.DownloadToken, &snap.DownloadExpiresAt, &snap.DownloadURL,
+			&snap.CreatedAt, &snap.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan snapshot/job: %w", err)
+		}
+		snap.TenantName = tenantName.String
+		snap.SourceID = sourceID.String
+		snap.SourceName = sourceName.String
+		snap.SourceType = sourceType.String
+		snap.StorageBackend = storageBackend.String
+		snapshots = append(snapshots, &snap)
+	}
+
+	return snapshots, nil
+}
+
+// ==================== LOGS ====================
+
+// LogEntry represents a log entry record
+type LogEntry struct {
+	ID         string          `json:"id"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Level      string          `json:"level"`
+	Message    string          `json:"message"`
+	WorkerID   *string         `json:"worker_id,omitempty"`
+	JobID      *string         `json:"job_id,omitempty"`
+	SnapshotID *string         `json:"snapshot_id,omitempty"`
+	SourceID   *string         `json:"source_id,omitempty"`
+	ScheduleID *string         `json:"schedule_id,omitempty"`
+	Details    json.RawMessage `json:"details,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
+}
+
+// CreateLog creates a new log entry
+func (r *Repository) CreateLog(ctx context.Context, level, message string, workerID, jobID, snapshotID, sourceID, scheduleID *string, details json.RawMessage) error {
+	id := uuid.New().String()
+	now := time.Now()
+
+	query := `INSERT INTO logs (id, timestamp, level, message, worker_id, job_id, snapshot_id, source_id, schedule_id, details, created_at)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+
+	_, err := r.db.ExecContext(ctx, query, id, now, level, message, workerID, jobID, snapshotID, sourceID, scheduleID, details, now)
+	if err != nil {
+		return fmt.Errorf("failed to create log: %w", err)
+	}
+
+	return nil
+}
+
+// ListLogsForSnapshot retrieves logs for a specific snapshot
+func (r *Repository) ListLogsForSnapshot(ctx context.Context, snapshotID string, limit int) ([]*LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `SELECT id, timestamp, level, message, worker_id, job_id, snapshot_id, source_id, schedule_id, details, created_at
+	          FROM logs
+	          WHERE snapshot_id = $1
+	          ORDER BY timestamp DESC
+	          LIMIT $2`
+
+	rows, err := r.db.QueryContext(ctx, query, snapshotID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list logs for snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []*LogEntry
+	for rows.Next() {
+		var log LogEntry
+		var details sql.NullString
+		err := rows.Scan(
+			&log.ID, &log.Timestamp, &log.Level, &log.Message, &log.WorkerID, &log.JobID,
+			&log.SnapshotID, &log.SourceID, &log.ScheduleID, &details, &log.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan log: %w", err)
+		}
+		if details.Valid {
+			log.Details = json.RawMessage(details.String)
+		}
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
+// ListLogsForSnapshotWithJob retrieves logs for a specific snapshot by both snapshot_id and job_id
+// This is useful because logs may reference either the snapshot_id or job_id
+func (r *Repository) ListLogsForSnapshotWithJob(ctx context.Context, snapshotID, jobID string, limit int) ([]*LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `SELECT id, timestamp, level, message, worker_id, job_id, snapshot_id, source_id, schedule_id, details, created_at
+	          FROM logs
+	          WHERE snapshot_id = $1 OR job_id = $2
+	          ORDER BY timestamp DESC
+	          LIMIT $3`
+
+	rows, err := r.db.QueryContext(ctx, query, snapshotID, jobID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list logs for snapshot: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []*LogEntry
+	for rows.Next() {
+		var log LogEntry
+		var details sql.NullString
+		err := rows.Scan(
+			&log.ID, &log.Timestamp, &log.Level, &log.Message, &log.WorkerID, &log.JobID,
+			&log.SnapshotID, &log.SourceID, &log.ScheduleID, &details, &log.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan log: %w", err)
+		}
+		if details.Valid {
+			log.Details = json.RawMessage(details.String)
+		}
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
+// ListLogsForSource retrieves logs for a specific source
+func (r *Repository) ListLogsForSource(ctx context.Context, sourceID string, limit int) ([]*LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `SELECT id, timestamp, level, message, worker_id, job_id, snapshot_id, source_id, schedule_id, details, created_at
+	          FROM logs
+	          WHERE source_id = $1
+	          ORDER BY timestamp DESC
+	          LIMIT $2`
+
+	rows, err := r.db.QueryContext(ctx, query, sourceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list logs for source: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []*LogEntry
+	for rows.Next() {
+		var log LogEntry
+		var details sql.NullString
+		err := rows.Scan(
+			&log.ID, &log.Timestamp, &log.Level, &log.Message, &log.WorkerID, &log.JobID,
+			&log.SnapshotID, &log.SourceID, &log.ScheduleID, &details, &log.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan log: %w", err)
+		}
+		if details.Valid {
+			log.Details = json.RawMessage(details.String)
+		}
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
+// ListLogsForSourceWithJobs retrieves logs for a source by also checking related jobs and snapshots
+func (r *Repository) ListLogsForSourceWithJobs(ctx context.Context, sourceID string, limit int) ([]*LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Get logs that match source_id OR are from jobs/snapshots for this source
+	query := `SELECT DISTINCT l.id, l.timestamp, l.level, l.message, l.worker_id, l.job_id, l.snapshot_id, l.source_id, l.schedule_id, l.details, l.created_at
+	          FROM logs l
+	          LEFT JOIN jobs j ON l.job_id::uuid = j.id
+	          LEFT JOIN snapshots s ON l.snapshot_id::uuid = s.id
+	          WHERE l.source_id = $1
+	             OR j.source_id = $1::uuid
+	             OR s.source_id = $1::uuid
+	          ORDER BY l.timestamp DESC
+	          LIMIT $2`
+
+	rows, err := r.db.QueryContext(ctx, query, sourceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list logs for source: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []*LogEntry
+	for rows.Next() {
+		var log LogEntry
+		var details sql.NullString
+		err := rows.Scan(
+			&log.ID, &log.Timestamp, &log.Level, &log.Message, &log.WorkerID, &log.JobID,
+			&log.SnapshotID, &log.SourceID, &log.ScheduleID, &details, &log.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan log: %w", err)
+		}
+		if details.Valid {
+			log.Details = json.RawMessage(details.String)
+		}
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
 }

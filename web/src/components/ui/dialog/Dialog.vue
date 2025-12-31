@@ -1,12 +1,31 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 
 interface Props {
   open?: boolean
+  size?: 'sm' | 'md' | 'lg' | 'xl' | 'full'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   open: false,
+  size: 'md',
+})
+
+const sizeClasses = computed(() => {
+  switch (props.size) {
+    case 'sm':
+      return 'max-w-sm'
+    case 'md':
+      return 'max-w-md'
+    case 'lg':
+      return 'max-w-3xl'
+    case 'xl':
+      return 'max-w-[90vw] w-[90vw]'
+    case 'full':
+      return 'max-w-[95vw] w-full'
+    default:
+      return 'max-w-md'
+  }
 })
 
 const emit = defineEmits<{
@@ -36,7 +55,7 @@ function close() {
     <!-- Dialog -->
     <div v-if="internalOpen" class="fixed inset-0 z-[60] flex items-center justify-center p-4">
       <div
-        class="relative bg-background rounded-lg shadow-lg w-full max-w-md max-h-[90vh] overflow-y-auto"
+        :class="['relative bg-background rounded-lg shadow-lg w-full max-h-[90vh] overflow-y-auto', sizeClasses]"
         role="dialog"
         @click.stop
       >

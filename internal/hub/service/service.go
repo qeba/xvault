@@ -402,6 +402,19 @@ func (s *Service) EvaluateRetentionPolicy(ctx context.Context, tenantID, sourceI
 		return nil, fmt.Errorf("failed to list snapshots for retention: %w", err)
 	}
 
+	// If mode is "all", keep all snapshots (no deletion)
+	if policy.Mode == "all" {
+		var allIDs []string
+		for _, snap := range snapshots {
+			allIDs = append(allIDs, snap.ID)
+		}
+		return &types.RetentionEvaluationResult{
+			SnapshotsToDelete: nil,
+			SnapshotsToKeep:   allIDs,
+			Summary:           fmt.Sprintf("Mode 'all': keeping all %d snapshots", len(snapshots)),
+		}, nil
+	}
+
 	// Build a set of snapshots to protect
 	protected := make(map[string]bool) // snapshot ID -> true
 
@@ -607,20 +620,42 @@ func (s *Service) RunRetentionEvaluationForSource(ctx context.Context, sourceID 
 		policy = types.DefaultRetentionPolicy()
 	}
 
+	log.Printf("retention: source=%s, raw_policy={mode:%s, keep_last_n:%v, keep_within_duration:%s, max_age_days:%v}",
+		sourceID, policy.Mode,
+		policy.KeepLastN,
+		policy.KeepWithinDuration,
+		policy.MaxAgeDays)
+
+	// Normalize policy to convert frontend format (mode, keep_within_duration) to internal format
+	policy.Normalize()
+
+	log.Printf("retention: source=%s, normalized_policy={mode:%s, keep_last_n:%v, max_age_days:%v}",
+		sourceID, policy.Mode,
+		policy.KeepLastN,
+		policy.MaxAgeDays)
+
 	// Evaluate policy
 	result, err := s.EvaluateRetentionPolicy(ctx, schedule.TenantID, sourceID, policy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to evaluate retention policy: %w", err)
 	}
 
+	log.Printf("retention: source=%s, result={to_keep:%d, to_delete:%d, summary:%s}",
+		sourceID, len(result.SnapshotsToKeep), len(result.SnapshotsToDelete), result.Summary)
+
 	// Enqueue delete jobs for snapshots to delete
+	var deleteJobsEnqueued int
 	for _, snapshotID := range result.SnapshotsToDelete {
 		_, err := s.EnqueueDeleteJob(ctx, snapshotID)
 		if err != nil {
-			// Log error but continue with other snapshots
-			// TODO: Add proper logging
-			_ = err
+			log.Printf("retention: failed to enqueue delete job for snapshot %s: %v", snapshotID, err)
+		} else {
+			deleteJobsEnqueued++
 		}
+	}
+
+	if deleteJobsEnqueued > 0 {
+		log.Printf("retention: source=%s, enqueued %d delete jobs", sourceID, deleteJobsEnqueued)
 	}
 
 	return result, nil
@@ -1745,6 +1780,12 @@ func (s *Service) ListAllSnapshotsAdmin(ctx context.Context, limit int) ([]*repo
 	return s.repo.ListAllSnapshotsAdmin(ctx, limit)
 }
 
+// ListAllSnapshotsAndJobsAdmin returns all snapshots and in-progress/failed jobs (admin only)
+// This shows the complete status including queued, running, and failed backups
+func (s *Service) ListAllSnapshotsAndJobsAdmin(ctx context.Context, limit int) ([]*repository.AdminSnapshot, error) {
+	return s.repo.ListAllSnapshotsAndJobsAdmin(ctx, limit)
+}
+
 // ========== Backup Scheduler ==========
 
 // ProcessDueSchedules checks for schedules that are due to run and enqueues backup jobs
@@ -1870,4 +1911,68 @@ func (s *Service) CalculateNextRun(schedule *repository.Schedule, from time.Time
 	}
 
 	return time.Time{}, fmt.Errorf("schedule has neither cron nor interval_minutes")
+}
+
+// ========== Log Management ==========
+
+// CreateLogRequest is the request to create a log entry
+type CreateLogRequest struct {
+	Level      string          `json:"level"` // debug, info, warn, error
+	Message    string          `json:"message"`
+	WorkerID   *string         `json:"worker_id,omitempty"`
+	JobID      *string         `json:"job_id,omitempty"`
+	SnapshotID *string         `json:"snapshot_id,omitempty"`
+	SourceID   *string         `json:"source_id,omitempty"`
+	ScheduleID *string         `json:"schedule_id,omitempty"`
+	Details    json.RawMessage `json:"details,omitempty"`
+}
+
+// CreateLog creates a new log entry
+func (s *Service) CreateLog(ctx context.Context, req CreateLogRequest) error {
+	detailsJSON := json.RawMessage("{}")
+	if req.Details != nil {
+		detailsJSON = req.Details
+	}
+	return s.repo.CreateLog(ctx, req.Level, req.Message, req.WorkerID, req.JobID, req.SnapshotID, req.SourceID, req.ScheduleID, detailsJSON)
+}
+
+// GetLogsForSnapshot retrieves logs for a specific snapshot
+// It queries by both snapshot_id and the snapshot's job_id to get all related logs
+func (s *Service) GetLogsForSnapshot(ctx context.Context, snapshotID string, limit int) ([]*repository.LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Get the snapshot to find its job_id
+	snapshot, err := s.repo.GetSnapshot(ctx, snapshotID)
+	if err != nil {
+		// If snapshot not found, still try to find logs by snapshot_id
+		logs, logErr := s.repo.ListLogsForSnapshot(ctx, snapshotID, limit)
+		if logErr != nil {
+			return nil, fmt.Errorf("failed to get logs for snapshot: %w", logErr)
+		}
+		return logs, nil
+	}
+
+	// Query logs by both snapshot_id and job_id
+	logs, err := s.repo.ListLogsForSnapshotWithJob(ctx, snapshotID, snapshot.JobID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logs for snapshot: %w", err)
+	}
+	return logs, nil
+}
+
+// GetLogsForSource retrieves logs for a specific source
+// It queries by source_id and also by related jobs and snapshots
+func (s *Service) GetLogsForSource(ctx context.Context, sourceID string, limit int) ([]*repository.LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Query logs by source_id and related jobs/snapshots
+	logs, err := s.repo.ListLogsForSourceWithJobs(ctx, sourceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logs for source: %w", err)
+	}
+	return logs, nil
 }

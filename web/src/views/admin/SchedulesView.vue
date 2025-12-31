@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, onUnmounted } from 'vue'
 import { useAdminStore } from '@/stores/admin'
 import type { Schedule, AdminCreateScheduleRequest, AdminUpdateScheduleRequest } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
@@ -8,7 +8,6 @@ import CardContent from '@/components/ui/card/CardContent.vue'
 import Input from '@/components/ui/input/Input.vue'
 import Label from '@/components/ui/label/Label.vue'
 import Dialog from '@/components/ui/dialog/Dialog.vue'
-import { Select, type SelectOption } from '@/components/ui/select'
 
 const adminStore = useAdminStore()
 
@@ -27,14 +26,37 @@ const deleteError = ref('')
 const editingSchedule = ref<Schedule | null>(null)
 const deletingSchedule = ref<Schedule | null>(null)
 
-const statusFilterOptions: SelectOption[] = [
+// Clock functionality
+const currentTime = ref(new Date())
+const timeInterval = ref<number | null>(null)
+
+// Update time every second
+const updateTime = () => {
+  currentTime.value = new Date()
+}
+
+const formatTime = (date: Date, timezone?: string) => {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  }).format(date)
+}
+
+const statusFilterOptions = [
   { label: 'All Status', value: '' },
   { label: 'Enabled', value: 'enabled' },
   { label: 'Disabled', value: 'disabled' },
 ]
 
 // Timezone options for select
-const timezoneOptions: SelectOption[] = [
+const timezoneOptions = [
   { label: 'UTC', value: 'UTC' },
   { label: 'America/New_York (EST/EDT)', value: 'America/New_York' },
   { label: 'America/Chicago (CST/CDT)', value: 'America/Chicago' },
@@ -56,7 +78,10 @@ const timezoneOptions: SelectOption[] = [
 ]
 
 // Source options for select
-const sourceOptions = computed<SelectOption[]>(() => {
+const sourceOptions = computed(() => {
+  if (!adminStore.sources || adminStore.sources.length === 0) {
+    return []
+  }
   return adminStore.sources.map(source => ({
     label: `${source.name} (${getTenantName(source.tenant_id)})`,
     value: source.id,
@@ -83,37 +108,80 @@ const editForm = ref({
 
 // Computed
 const filteredSchedules = computed(() => {
-  let result = adminStore.schedules
-
-  if (searchQuery.value) {
-    const query = searchQuery.value.toLowerCase()
-    result = result.filter(s =>
-      s.id.toLowerCase().includes(query) ||
-      getSourceName(s.source_id).toLowerCase().includes(query) ||
-      getTenantName(s.tenant_id).toLowerCase().includes(query)
-    )
+  // Make sure we have schedules loaded
+  if (!adminStore.schedules || adminStore.schedules.length === 0) {
+    return []
   }
 
-  if (statusFilter.value) {
-    result = result.filter(s => s.status === statusFilter.value)
+  let result = [...adminStore.schedules] // Create a copy to avoid mutating original array
+
+  // Apply search filter
+  if (searchQuery.value && searchQuery.value.trim()) {
+    const query = searchQuery.value.toLowerCase().trim()
+    result = result.filter(schedule => {
+      // Search in schedule ID
+      const scheduleId = schedule.id?.toLowerCase() || ''
+      
+      // Search in source name
+      const sourceName = getSourceName(schedule.source_id).toLowerCase()
+      
+      // Search in tenant name  
+      const tenantName = getTenantName(schedule.tenant_id).toLowerCase()
+      
+      // Search in cron expression
+      const cronExpression = (schedule.cron || '').toLowerCase()
+      
+      // Search in timezone
+      const timezone = (schedule.timezone || '').toLowerCase()
+      
+      // Search in status
+      const status = (schedule.status || '').toLowerCase()
+
+      return scheduleId.includes(query) ||
+             sourceName.includes(query) ||
+             tenantName.includes(query) ||
+             cronExpression.includes(query) ||
+             timezone.includes(query) ||
+             status.includes(query)
+    })
+  }
+
+  // Apply status filter
+  if (statusFilter.value && statusFilter.value.trim()) {
+    result = result.filter(schedule => {
+      return schedule.status === statusFilter.value
+    })
   }
 
   return result
 })
 
-const scheduleStats = computed(() => ({
-  total: adminStore.schedules.length,
-  enabled: adminStore.schedules.filter(s => s.status === 'enabled').length,
-  disabled: adminStore.schedules.filter(s => s.status === 'disabled').length,
-}))
+const scheduleStats = computed(() => {
+  // Ensure we have schedules before computing stats
+  const schedules = adminStore.schedules || []
+  return {
+    total: schedules.length,
+    enabled: schedules.filter(s => s.status === 'enabled').length,
+    disabled: schedules.filter(s => s.status === 'disabled').length,
+  }
+})
 
 onMounted(async () => {
+  // Start the clock
+  timeInterval.value = setInterval(updateTime, 1000)
+  updateTime() // Initial update
+  
   try {
-    await Promise.all([
-      adminStore.fetchSchedules(),
-      adminStore.fetchSources(),
-      adminStore.fetchTenants(),
-    ])
+    isLoading.value = true
+    // Fetch data in sequence to ensure proper loading
+    await adminStore.fetchTenants()
+    await adminStore.fetchSources()
+    await adminStore.fetchSchedules()
+    
+    // Debug: log the loaded data
+    console.log('Schedules loaded:', adminStore.schedules?.length || 0)
+    console.log('Sources loaded:', adminStore.sources?.length || 0)
+    console.log('Tenants loaded:', adminStore.tenants?.length || 0)
   } catch (error) {
     console.error('Failed to load data:', error)
   } finally {
@@ -121,14 +189,22 @@ onMounted(async () => {
   }
 })
 
+onUnmounted(() => {
+  if (timeInterval.value) {
+    clearInterval(timeInterval.value)
+  }
+})
+
 function getTenantName(tenantId: string): string {
+  if (!tenantId) return 'Unknown'
   const tenant = adminStore.getTenantById(tenantId)
-  return tenant?.name || tenantId.slice(0, 8) + '...'
+  return tenant?.name || `${tenantId.slice(0, 8)}...`
 }
 
 function getSourceName(sourceId: string): string {
-  const source = adminStore.sources.find(s => s.id === sourceId)
-  return source?.name || sourceId.slice(0, 8) + '...'
+  if (!sourceId) return 'Unknown'
+  const source = adminStore.sources?.find(s => s.id === sourceId)
+  return source?.name || `${sourceId.slice(0, 8)}...`
 }
 
 function formatCron(schedule: Schedule): string {
@@ -317,6 +393,7 @@ async function toggleStatus(schedule: Schedule) {
     console.error('Failed to toggle schedule status:', error)
   }
 }
+
 </script>
 
 <template>
@@ -326,6 +403,18 @@ async function toggleStatus(schedule: Schedule) {
       <div>
         <h1 class="text-3xl font-bold">Schedules</h1>
         <p class="text-muted-foreground">Manage backup schedules across all tenants</p>
+        
+        <!-- Clocks -->
+        <div class="flex gap-6 mt-4 text-sm">
+          <div class="bg-muted/50 px-3 py-2 rounded-lg">
+            <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">UTC Time</div>
+            <div class="font-mono">{{ formatTime(currentTime, 'UTC') }}</div>
+          </div>
+          <div class="bg-muted/50 px-3 py-2 rounded-lg">
+            <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">Local Time</div>
+            <div class="font-mono">{{ formatTime(currentTime) }}</div>
+          </div>
+        </div>
       </div>
       <Button @click="openCreateDialog">
         <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -368,7 +457,14 @@ async function toggleStatus(schedule: Schedule) {
               placeholder="Search schedules..."
             />
           </div>
-          <Select v-model="statusFilter" :options="statusFilterOptions" />
+          <select 
+            v-model="statusFilter" 
+            class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <option v-for="option in statusFilterOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
         </div>
       </CardContent>
     </Card>
@@ -379,8 +475,19 @@ async function toggleStatus(schedule: Schedule) {
         <div v-if="isLoading" class="p-8 text-center text-muted-foreground">
           Loading schedules...
         </div>
-        <div v-else-if="filteredSchedules.length === 0" class="p-8 text-center text-muted-foreground">
-          No schedules found. Create your first schedule to get started.
+        <div v-else-if="filteredSchedules.length === 0 && !isLoading" class="p-8 text-center text-muted-foreground">
+          <div v-if="searchQuery || statusFilter">
+            No schedules match your current filters.
+            <button 
+              @click="searchQuery = ''; statusFilter = ''" 
+              class="text-primary hover:underline ml-2"
+            >
+              Clear filters
+            </button>
+          </div>
+          <div v-else>
+            No schedules found. Create your first schedule to get started.
+          </div>
         </div>
         <div v-else class="overflow-x-auto">
           <table class="w-full">
@@ -471,7 +578,16 @@ async function toggleStatus(schedule: Schedule) {
           <!-- Source Selection -->
           <div class="space-y-2">
             <Label>Source</Label>
-            <Select v-model="createForm.source_id" :options="sourceOptions" :disabled="isCreating" />
+            <select 
+              v-model="createForm.source_id" 
+              :disabled="isCreating"
+              class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="" disabled>Select a source...</option>
+              <option v-for="option in sourceOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
           </div>
 
           <!-- Cron Expression -->
@@ -491,12 +607,16 @@ async function toggleStatus(schedule: Schedule) {
           <!-- Timezone -->
           <div class="space-y-2">
             <Label for="create-timezone">Timezone</Label>
-            <Select
+            <select 
               id="create-timezone"
-              v-model="createForm.timezone"
-              :options="timezoneOptions"
+              v-model="createForm.timezone" 
               :disabled="isCreating"
-            />
+              class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option v-for="option in timezoneOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
             <p class="text-xs text-muted-foreground">
               Backups will run at the scheduled time in this timezone
             </p>
@@ -630,12 +750,16 @@ async function toggleStatus(schedule: Schedule) {
           <!-- Timezone -->
           <div class="space-y-2">
             <Label for="edit-timezone">Timezone</Label>
-            <Select
+            <select 
               id="edit-timezone"
-              v-model="editForm.timezone"
-              :options="timezoneOptions"
+              v-model="editForm.timezone" 
               :disabled="isUpdating"
-            />
+              class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option v-for="option in timezoneOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
             <p class="text-xs text-muted-foreground">
               Backups will run at the scheduled time in this timezone
             </p>

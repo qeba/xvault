@@ -46,7 +46,7 @@ func contextWithTimeout(timeout time.Duration) (context.Context, context.CancelF
 	return context.WithTimeout(context.Background(), timeout)
 }
 
-// Tenant handlers
+// Tenant handlersdv
 
 // HandleCreateTenant handles POST /api/v1/tenants
 func (h *Handlers) HandleCreateTenant(c *fiber.Ctx) error {
@@ -1276,17 +1276,18 @@ func (h *Handlers) HandleDeleteScheduleAdmin(c *fiber.Ctx) error {
 // Admin / Snapshot handlers
 
 // HandleListSnapshotsAdmin handles GET /api/v1/admin/snapshots
-// Returns all snapshots across all tenants with source/tenant info (admin only)
+// Returns all snapshots and in-progress jobs across all tenants with source/tenant info (admin only)
 func (h *Handlers) HandleListSnapshotsAdmin(c *fiber.Ctx) error {
 	ctx, cancel := contextWithTimeout(5 * time.Second)
 	defer cancel()
 
-	limit := c.QueryInt("limit", 100)
+	limit := c.QueryInt("limit", 200)
 	if limit > 500 {
 		limit = 500
 	}
 
-	snapshots, err := h.service.ListAllSnapshotsAdmin(ctx, limit)
+	// Use the new method that includes both snapshots and jobs
+	snapshots, err := h.service.ListAllSnapshotsAndJobsAdmin(ctx, limit)
 	if err != nil {
 		log.Printf("failed to list all snapshots: %v", err)
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list snapshots")
@@ -1313,4 +1314,83 @@ func (h *Handlers) HandleGetSnapshotAdmin(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(snapshot)
+}
+
+// HandleGetLogsForSnapshot handles GET /api/v1/admin/snapshots/:id/logs
+// Returns logs for a specific snapshot (admin only)
+func (h *Handlers) HandleGetLogsForSnapshot(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	snapshotID := c.Params("id")
+	if snapshotID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("snapshot_id is required"), "Validation failed")
+	}
+
+	limit := c.QueryInt("limit", 100)
+	if limit > 500 {
+		limit = 500
+	}
+
+	logs, err := h.service.GetLogsForSnapshot(ctx, snapshotID, limit)
+	if err != nil {
+		log.Printf("failed to get logs for snapshot: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to get logs")
+	}
+
+	return c.JSON(fiber.Map{"logs": logs})
+}
+
+// HandleGetLogsForSource handles GET /api/v1/admin/sources/:id/logs
+// Returns logs for a specific source (admin only)
+func (h *Handlers) HandleGetLogsForSource(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	sourceID := c.Params("id")
+	if sourceID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("source_id is required"), "Validation failed")
+	}
+
+	limit := c.QueryInt("limit", 100)
+	if limit > 500 {
+		limit = 500
+	}
+
+	logs, err := h.service.GetLogsForSource(ctx, sourceID, limit)
+	if err != nil {
+		log.Printf("failed to get logs for source: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to get logs")
+	}
+
+	return c.JSON(fiber.Map{"logs": logs})
+}
+
+// HandleCreateLog handles POST /internal/logs
+// Creates a new log entry (for workers)
+func (h *Handlers) HandleCreateLog(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	var req service.CreateLogRequest
+	if err := c.BodyParser(&req); err != nil {
+		return sendError(c, fiber.StatusBadRequest, err, "Invalid request body")
+	}
+
+	if req.Level == "" || req.Message == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("level and message are required"), "Validation failed")
+	}
+
+	// Validate log level
+	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
+	if !validLevels[req.Level] {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("invalid log level: %s", req.Level), "Validation failed")
+	}
+
+	if err := h.service.CreateLog(ctx, req); err != nil {
+		log.Printf("failed to create log: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create log")
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"ok": true})
 }

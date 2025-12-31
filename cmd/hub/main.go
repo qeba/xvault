@@ -195,6 +195,7 @@ func main() {
 	admin.Put("/sources/:id", h.HandleUpdateSourceAdmin)
 	admin.Delete("/sources/:id", h.HandleDeleteSourceAdmin)
 	admin.Post("/sources/:id/backup", h.HandleTriggerBackupAdmin)
+	admin.Get("/sources/:id/logs", h.HandleGetLogsForSource)
 
 	// Schedule management (admin only)
 	admin.Get("/schedules", h.HandleListSchedulesAdmin)
@@ -206,6 +207,7 @@ func main() {
 	// Snapshot management (admin only)
 	admin.Get("/snapshots", h.HandleListSnapshotsAdmin)
 	admin.Get("/snapshots/:id", h.HandleGetSnapshotAdmin)
+	admin.Get("/snapshots/:id/logs", h.HandleGetLogsForSnapshot)
 
 	// Internal/Worker routes
 	internal := app.Group("/internal")
@@ -233,6 +235,9 @@ func main() {
 
 	// Internal settings (for restore service)
 	internal.Get("/settings/download-expiration", h.HandleGetDownloadExpiration)
+
+	// Internal logs (for workers)
+	internal.Post("/logs", h.HandleCreateLog)
 
 	// Start retention scheduler in background
 	retentionIntervalHours := getenv("RETENTION_EVALUATION_INTERVAL_HOURS", "6")
