@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import type { LogEntry, LogLevel } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
@@ -25,8 +25,11 @@ const emit = defineEmits<{
 
 const levelFilter = ref<LogLevel | 'all'>('all')
 const searchQuery = ref('')
-const autoScroll = ref(true)
+const autoScroll = ref(false)
 const logContainer = ref<HTMLElement | null>(null)
+const displayLimit = ref(10)
+const DEFAULT_LIMIT = 10
+const LIMIT_INCREMENT = 20
 
 const levelOptions: SelectOption[] = [
   { label: 'All Levels', value: 'all' },
@@ -36,6 +39,7 @@ const levelOptions: SelectOption[] = [
   { label: 'Debug', value: 'debug' },
 ]
 
+// Search and filter work on ALL logs, not just displayed ones
 const filteredLogs = computed(() => {
   let result = props.logs
 
@@ -44,7 +48,7 @@ const filteredLogs = computed(() => {
     result = result.filter(log => log.level === levelFilter.value)
   }
 
-  // Filter by search query
+  // Filter by search query - searches across ALL logs
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(log =>
@@ -60,13 +64,36 @@ const filteredLogs = computed(() => {
   return result
 })
 
+// Display only the limited number of logs
+const displayedLogs = computed(() => {
+  // When searching, show all matching results
+  if (searchQuery.value || levelFilter.value !== 'all') {
+    return filteredLogs.value
+  }
+  // Otherwise, apply pagination
+  return filteredLogs.value.slice(-displayLimit.value)
+})
+
+// Stats based on filtered results (search works correctly)
 const logStats = computed(() => ({
-  total: props.logs.length,
-  error: props.logs.filter(l => l.level === 'error').length,
-  warn: props.logs.filter(l => l.level === 'warn').length,
-  info: props.logs.filter(l => l.level === 'info').length,
-  debug: props.logs.filter(l => l.level === 'debug').length,
+  total: filteredLogs.value.length,
+  displayed: displayedLogs.value.length,
+  hidden: Math.max(0, filteredLogs.value.length - displayedLogs.value.length),
+  error: filteredLogs.value.filter(l => l.level === 'error').length,
+  warn: filteredLogs.value.filter(l => l.level === 'warn').length,
+  info: filteredLogs.value.filter(l => l.level === 'info').length,
+  debug: filteredLogs.value.filter(l => l.level === 'debug').length,
 }))
+
+// Check if we can load more
+const canLoadMore = computed(() => {
+  return displayLimit.value < filteredLogs.value.length
+})
+
+// Check if showing all (no pagination)
+const isShowingAll = computed(() => {
+  return displayLimit.value >= filteredLogs.value.length && filteredLogs.value.length > DEFAULT_LIMIT
+})
 
 function getStatBadgeClass(level: LogLevel): string {
   switch (level) {
@@ -152,17 +179,41 @@ function downloadLogs() {
 function clearFilters() {
   levelFilter.value = 'all'
   searchQuery.value = ''
+  displayLimit.value = DEFAULT_LIMIT
 }
 
-// Auto-scroll to bottom when logs are added
+// Pagination functions
+function loadMore() {
+  displayLimit.value += LIMIT_INCREMENT
+  // Auto-scroll to bottom after loading more (showing latest logs)
+  nextTick(() => {
+    if (autoScroll.value && logContainer.value) {
+      logContainer.value.scrollTop = logContainer.value.scrollHeight
+    }
+  })
+}
+
+function showAll() {
+  displayLimit.value = filteredLogs.value.length
+  nextTick(() => {
+    if (autoScroll.value && logContainer.value) {
+      logContainer.value.scrollTop = logContainer.value.scrollHeight
+    }
+  })
+}
+
+function showLess() {
+  displayLimit.value = DEFAULT_LIMIT
+}
+
+// Auto-scroll to bottom (logs are ordered oldest → newest, so bottom = latest)
 function scrollToBottom() {
   if (autoScroll.value && logContainer.value) {
     logContainer.value.scrollTop = logContainer.value.scrollHeight
   }
 }
 
-// Watch for logs changes to auto-scroll
-import { watch } from 'vue'
+// Watch for new logs to auto-scroll if enabled
 watch(() => props.logs, () => {
   if (autoScroll.value) {
     setTimeout(scrollToBottom, 50)
@@ -206,9 +257,15 @@ watch(() => props.logs, () => {
       
       <!-- Stats Pills -->
       <div v-if="logs.length > 0" class="flex items-center gap-2 flex-wrap mt-4">
-        <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted text-muted-foreground text-xs font-medium">
-          <span class="text-foreground font-semibold">{{ logStats.total }}</span>
-          <span>total</span>
+        <!-- Show counter: "Showing X of Y logs" -->
+        <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 text-primary text-xs font-medium">
+          <span class="font-semibold">{{ logStats.displayed }}</span>
+          <span>of</span>
+          <span class="font-semibold">{{ logStats.total }}</span>
+          <span>logs</span>
+        </div>
+        <div v-if="logStats.hidden > 0 && !searchQuery && levelFilter === 'all'" class="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-muted text-muted-foreground text-xs font-medium">
+          <span>+{{ logStats.hidden }} more</span>
         </div>
         <div v-if="logStats.error > 0" :class="['flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium', getStatBadgeClass('error')]">
           <span class="font-semibold">{{ logStats.error }}</span>
@@ -287,7 +344,7 @@ watch(() => props.logs, () => {
       >
         <div class="divide-y divide-border/50">
           <div
-            v-for="(log, index) in filteredLogs"
+            v-for="(log, index) in displayedLogs"
             :key="log.id || index"
             :class="[
               'group flex gap-4 px-4 py-3 border-l-[3px] transition-colors',
@@ -299,18 +356,18 @@ watch(() => props.logs, () => {
               <span class="text-muted-foreground/70">{{ formatTimestamp(log.timestamp).date }}</span>
               <span class="text-foreground font-medium">{{ formatTimestamp(log.timestamp).time }}</span>
             </div>
-            
+
             <!-- Level Badge -->
             <div class="flex-shrink-0 pt-0.5">
               <span :class="['inline-flex items-center justify-center w-14 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide rounded', getLevelBadgeClass(log.level)]">
                 {{ log.level }}
               </span>
             </div>
-            
+
             <!-- Message Content -->
             <div class="flex-1 min-w-0 space-y-2">
               <p class="text-foreground leading-relaxed break-words whitespace-pre-wrap">{{ log.message }}</p>
-              
+
               <!-- Context Tags -->
               <div v-if="log.worker_id || log.job_id || log.snapshot_id || log.source_id || log.schedule_id" class="flex gap-2 flex-wrap">
                 <span v-if="log.worker_id" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-muted text-[10px] text-muted-foreground">
@@ -334,13 +391,45 @@ watch(() => props.logs, () => {
                   <span class="font-medium text-foreground/80">{{ log.schedule_id.slice(0, 8) }}</span>
                 </span>
               </div>
-              
+
               <!-- Details Expandable -->
               <div v-if="log.details && Object.keys(log.details).length > 0" class="mt-2">
                 <pre class="p-3 rounded-md bg-muted/50 border text-[11px] text-muted-foreground overflow-x-auto leading-relaxed">{{ JSON.stringify(log.details, null, 2) }}</pre>
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- Pagination Controls -->
+        <div v-if="!searchQuery && levelFilter === 'all' && filteredLogs.length > DEFAULT_LIMIT" class="sticky bottom-0 left-0 right-0 px-4 py-3 bg-background/95 backdrop-blur border-t flex items-center justify-center gap-2">
+          <!-- Show number of hidden logs -->
+          <span v-if="logStats.hidden > 0" class="text-xs text-muted-foreground mr-2">
+            {{ logStats.hidden }} older logs hidden
+          </span>
+
+          <!-- Load More button -->
+          <Button v-if="canLoadMore" variant="outline" size="sm" @click="loadMore" class="gap-1.5">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+            Load More ({{ LIMIT_INCREMENT }})
+          </Button>
+
+          <!-- Show All button -->
+          <Button v-if="canLoadMore && logStats.total > 50" variant="ghost" size="sm" @click="showAll" class="gap-1.5">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+            </svg>
+            Show All
+          </Button>
+
+          <!-- Show Less button -->
+          <Button v-if="isShowingAll" variant="ghost" size="sm" @click="showLess" class="gap-1.5">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+            </svg>
+            Show Less
+          </Button>
         </div>
       </div>
     </CardContent>

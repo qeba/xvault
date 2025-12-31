@@ -329,6 +329,10 @@ func (s *Service) CompleteJob(ctx context.Context, jobID string, req types.JobCo
 		if err != nil {
 			return fmt.Errorf("failed to create snapshot: %w", err)
 		}
+
+		// Trigger retention evaluation for this source (debounced)
+		// This runs in background and won't block job completion
+		go s.maybeTriggerRetentionForSource(context.Background(), *job.SourceID)
 	}
 
 	// If delete_snapshot job completed successfully, delete the snapshot record
@@ -698,6 +702,51 @@ type SourceRetentionResult struct {
 	EvaluationResult *types.RetentionEvaluationResult `json:"evaluation_result,omitempty"`
 	JobsEnqueued     int                              `json:"jobs_enqueued"`
 	Error            string                           `json:"error,omitempty"`
+}
+
+const (
+	// RetentionLockKey is the Redis key prefix for retention locks
+	RetentionLockKey = "xvault:retention:lock:"
+	// RetentionCooldown is the minimum time between retention runs for the same source
+	// This prevents retention from running too frequently for high-frequency backups
+	RetentionCooldown = 60 * time.Second
+)
+
+// maybeTriggerRetentionForSource conditionally runs retention evaluation for a source
+// using Redis-based debouncing to prevent concurrent runs for the same source.
+// This is called after each backup completes in a goroutine.
+func (s *Service) maybeTriggerRetentionForSource(ctx context.Context, sourceID string) {
+	// Try to acquire a lock using Redis SETNX (set if not exists)
+	lockKey := RetentionLockKey + sourceID
+	acquired, err := s.redis.SetNX(ctx, lockKey, "1", RetentionCooldown).Result()
+	if err != nil {
+		log.Printf("retention: failed to acquire lock for source %s: %v", sourceID, err)
+		return
+	}
+
+	// If lock was not acquired, another goroutine is already handling retention for this source
+	if !acquired {
+		log.Printf("retention: skipping for source %s (already in progress)", sourceID)
+		return
+	}
+
+	log.Printf("retention: triggered for source %s", sourceID)
+
+	// Run retention evaluation with a timeout
+	evalCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	result, err := s.RunRetentionEvaluationForSource(evalCtx, sourceID)
+	if err != nil {
+		log.Printf("retention: failed for source %s: %v", sourceID, err)
+		return
+	}
+
+	// Log results
+	if result != nil {
+		log.Printf("retention: source=%s, to_keep=%d, to_delete=%d, summary=%s",
+			sourceID, len(result.SnapshotsToKeep), len(result.SnapshotsToDelete), result.Summary)
+	}
 }
 
 // Schedule management
