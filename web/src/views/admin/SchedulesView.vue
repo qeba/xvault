@@ -33,6 +33,28 @@ const statusFilterOptions: SelectOption[] = [
   { label: 'Disabled', value: 'disabled' },
 ]
 
+// Timezone options for select
+const timezoneOptions: SelectOption[] = [
+  { label: 'UTC', value: 'UTC' },
+  { label: 'America/New_York (EST/EDT)', value: 'America/New_York' },
+  { label: 'America/Chicago (CST/CDT)', value: 'America/Chicago' },
+  { label: 'America/Denver (MST/MDT)', value: 'America/Denver' },
+  { label: 'America/Los_Angeles (PST/PDT)', value: 'America/Los_Angeles' },
+  { label: 'America/Sao_Paulo', value: 'America/Sao_Paulo' },
+  { label: 'Europe/London (GMT/BST)', value: 'Europe/London' },
+  { label: 'Europe/Paris (CET/CEST)', value: 'Europe/Paris' },
+  { label: 'Europe/Berlin (CET/CEST)', value: 'Europe/Berlin' },
+  { label: 'Europe/Moscow (MSK)', value: 'Europe/Moscow' },
+  { label: 'Asia/Dubai (GST)', value: 'Asia/Dubai' },
+  { label: 'Asia/Kolkata (IST)', value: 'Asia/Kolkata' },
+  { label: 'Asia/Singapore (SGT)', value: 'Asia/Singapore' },
+  { label: 'Asia/Tokyo (JST)', value: 'Asia/Tokyo' },
+  { label: 'Asia/Shanghai (CST)', value: 'Asia/Shanghai' },
+  { label: 'Asia/Seoul (KST)', value: 'Asia/Seoul' },
+  { label: 'Australia/Sydney (AEST/AEDT)', value: 'Australia/Sydney' },
+  { label: 'Pacific/Auckland (NZST/NZDT)', value: 'Pacific/Auckland' },
+]
+
 // Source options for select
 const sourceOptions = computed<SelectOption[]>(() => {
   return adminStore.sources.map(source => ({
@@ -134,9 +156,41 @@ function formatRetention(schedule: Schedule): string {
   }
 }
 
-function formatDateTime(date: string | null | undefined): string {
+function formatDateTime(date: string | null | undefined, timezone?: string): string {
   if (!date) return 'Never'
-  return new Date(date).toLocaleString()
+  try {
+    const dateObj = new Date(date)
+    if (timezone) {
+      return dateObj.toLocaleString('en-US', {
+        timeZone: timezone,
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    }
+    return dateObj.toLocaleString()
+  } catch {
+    // Fallback if timezone is invalid
+    return new Date(date).toLocaleString()
+  }
+}
+
+function getTimezoneAbbr(timezone: string): string {
+  try {
+    const now = new Date()
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      timeZoneName: 'short',
+    })
+    const parts = formatter.formatToParts(now)
+    const tzPart = parts.find(p => p.type === 'timeZoneName')
+    return tzPart?.value || timezone
+  } catch {
+    return timezone
+  }
 }
 
 // Dialog handlers
@@ -359,10 +413,12 @@ async function toggleStatus(schedule: Schedule) {
                   <div class="text-xs text-muted-foreground">{{ schedule.timezone }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm text-muted-foreground">{{ formatDateTime(schedule.last_run_at) }}</div>
+                  <div class="text-sm text-muted-foreground">{{ formatDateTime(schedule.last_run_at, schedule.timezone) }}</div>
+                  <div v-if="schedule.last_run_at" class="text-xs text-muted-foreground/70">{{ getTimezoneAbbr(schedule.timezone) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
-                  <div class="text-sm text-muted-foreground">{{ formatDateTime(schedule.next_run_at) }}</div>
+                  <div class="text-sm text-muted-foreground">{{ formatDateTime(schedule.next_run_at, schedule.timezone) }}</div>
+                  <div v-if="schedule.next_run_at" class="text-xs text-muted-foreground/70">{{ getTimezoneAbbr(schedule.timezone) }}</div>
                 </td>
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm">{{ formatRetention(schedule) }}</div>
@@ -435,12 +491,15 @@ async function toggleStatus(schedule: Schedule) {
           <!-- Timezone -->
           <div class="space-y-2">
             <Label for="create-timezone">Timezone</Label>
-            <Input
+            <Select
               id="create-timezone"
               v-model="createForm.timezone"
-              placeholder="UTC"
+              :options="timezoneOptions"
               :disabled="isCreating"
             />
+            <p class="text-xs text-muted-foreground">
+              Backups will run at the scheduled time in this timezone
+            </p>
           </div>
 
           <!-- Retention Policy -->
@@ -571,12 +630,15 @@ async function toggleStatus(schedule: Schedule) {
           <!-- Timezone -->
           <div class="space-y-2">
             <Label for="edit-timezone">Timezone</Label>
-            <Input
+            <Select
               id="edit-timezone"
               v-model="editForm.timezone"
-              placeholder="UTC"
+              :options="timezoneOptions"
               :disabled="isUpdating"
             />
+            <p class="text-xs text-muted-foreground">
+              Backups will run at the scheduled time in this timezone
+            </p>
           </div>
 
           <!-- Retention Policy -->

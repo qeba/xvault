@@ -759,12 +759,12 @@ func (r *Repository) UpdateSchedule(ctx context.Context, scheduleID string, cron
 	query := `UPDATE schedules
 	          SET cron = $2, interval_minutes = $3, timezone = $4, status = $5, retention_policy = $6, updated_at = $7
 	          WHERE id = $1
-	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at`
+	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at`
 
 	var schedule Schedule
 	err := r.db.QueryRowContext(ctx, query, scheduleID, cron, intervalMinutes, timezone, status, retentionPolicy, now).Scan(
 		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
-		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update schedule: %w", err)
@@ -780,12 +780,12 @@ func (r *Repository) UpdateScheduleRetention(ctx context.Context, scheduleID str
 	query := `UPDATE schedules
 	          SET retention_policy = $2, updated_at = $3
 	          WHERE id = $1
-	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, created_at, updated_at`
+	          RETURNING id, tenant_id, source_id, cron, interval_minutes, timezone, status, retention_policy, last_run_at, next_run_at, created_at, updated_at`
 
 	var schedule Schedule
 	err := r.db.QueryRowContext(ctx, query, scheduleID, retentionPolicy, now).Scan(
 		&schedule.ID, &schedule.TenantID, &schedule.SourceID, &schedule.Cron, &schedule.IntervalMinutes,
-		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.CreatedAt, &schedule.UpdatedAt,
+		&schedule.Timezone, &schedule.Status, &schedule.RetentionPolicy, &schedule.LastRunAt, &schedule.NextRunAt, &schedule.CreatedAt, &schedule.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update schedule retention policy: %w", err)

@@ -715,6 +715,14 @@ func (s *Service) CreateSchedule(ctx context.Context, req CreateScheduleRequest)
 		return nil, fmt.Errorf("failed to create schedule: %w", err)
 	}
 
+	// Calculate and set initial next_run_at
+	now := time.Now()
+	nextRun, calcErr := s.CalculateNextRun(schedule, now)
+	if calcErr == nil {
+		_ = s.repo.UpdateScheduleRunTimes(ctx, schedule.ID, now, nextRun)
+		schedule.NextRunAt = &nextRun
+	}
+
 	return schedule, nil
 }
 
@@ -747,8 +755,16 @@ func (s *Service) UpdateSchedule(ctx context.Context, scheduleID string, req Upd
 	}
 
 	timezone := existing.Timezone
-	if req.Timezone != nil && *req.Timezone != "" {
+	timezoneChanged := false
+	if req.Timezone != nil && *req.Timezone != "" && *req.Timezone != existing.Timezone {
 		timezone = *req.Timezone
+		timezoneChanged = true
+	}
+
+	// Check if cron changed
+	cronChanged := false
+	if req.Cron != nil && (existing.Cron == nil || *req.Cron != *existing.Cron) {
+		cronChanged = true
 	}
 
 	status := existing.Status
@@ -771,6 +787,21 @@ func (s *Service) UpdateSchedule(ctx context.Context, scheduleID string, req Upd
 	schedule, err := s.repo.UpdateSchedule(ctx, scheduleID, cron, intervalMinutes, timezone, status, retentionPolicyJSON)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update schedule: %w", err)
+	}
+
+	// Recalculate next_run_at if cron or timezone changed
+	if (cronChanged || timezoneChanged) && status == "enabled" {
+		now := time.Now()
+		nextRun, calcErr := s.CalculateNextRun(schedule, now)
+		if calcErr == nil {
+			// Use existing last_run_at or use a zero time
+			lastRunAt := now
+			if schedule.LastRunAt != nil {
+				lastRunAt = *schedule.LastRunAt
+			}
+			_ = s.repo.UpdateScheduleRunTimes(ctx, scheduleID, lastRunAt, nextRun)
+			schedule.NextRunAt = &nextRun
+		}
 	}
 
 	return schedule, nil
