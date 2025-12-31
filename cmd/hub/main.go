@@ -208,6 +208,7 @@ func main() {
 	admin.Get("/snapshots", h.HandleListSnapshotsAdmin)
 	admin.Get("/snapshots/:id", h.HandleGetSnapshotAdmin)
 	admin.Get("/snapshots/:id/logs", h.HandleGetLogsForSnapshot)
+	admin.Delete("/snapshots/:id", h.HandleDeleteSnapshotAdmin)
 
 	// Internal/Worker routes
 	internal := app.Group("/internal")

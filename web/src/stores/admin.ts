@@ -465,6 +465,21 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  async function deleteSnapshot(id: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.delete(`/v1/admin/snapshots/${id}`)
+      snapshots.value = snapshots.value.filter((s) => s.id !== id)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to delete snapshot'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   // Logs management
   async function fetchLogsForSnapshot(snapshotId: string, limit: number = 100): Promise<LogEntry[]> {
     isLoading.value = true
@@ -537,6 +552,7 @@ export const useAdminStore = defineStore('admin', () => {
     // Snapshots
     fetchSnapshots,
     fetchSnapshot,
+    deleteSnapshot,
     // Settings
     fetchSettings,
     fetchSetting,

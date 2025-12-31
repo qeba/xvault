@@ -1341,6 +1341,35 @@ func (h *Handlers) HandleGetLogsForSnapshot(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"logs": logs})
 }
 
+// HandleDeleteSnapshotAdmin handles DELETE /api/v1/admin/snapshots/:id
+// Deletes a snapshot by enqueuing a delete_snapshot job to clean up worker storage
+// and remove the database record (admin only)
+func (h *Handlers) HandleDeleteSnapshotAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(10 * time.Second)
+	defer cancel()
+
+	snapshotID := c.Params("id")
+	if snapshotID == "" {
+		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("snapshot_id is required"), "Validation failed")
+	}
+
+	// Enqueue delete job (worker will clean up storage, then DB record is removed)
+	job, err := h.service.EnqueueDeleteJob(ctx, snapshotID)
+	if err != nil {
+		log.Printf("failed to enqueue delete job for snapshot: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to enqueue delete job")
+	}
+
+	log.Printf("enqueued delete job %s for snapshot %s", job.ID, snapshotID)
+
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"message":       "Delete job enqueued successfully",
+		"job_id":        job.ID,
+		"snapshot_id":   snapshotID,
+		"worker_id":     job.TargetWorkerID,
+	})
+}
+
 // HandleGetLogsForSource handles GET /api/v1/admin/sources/:id/logs
 // Returns logs for a specific source (admin only)
 func (h *Handlers) HandleGetLogsForSource(c *fiber.Ctx) error {

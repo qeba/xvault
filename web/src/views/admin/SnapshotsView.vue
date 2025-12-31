@@ -20,10 +20,13 @@ const sourceFilter = ref('')
 const isLoading = ref(true)
 const showDetailDialog = ref(false)
 const showLogsDialog = ref(false)
+const showDeleteDialog = ref(false)
 const selectedSnapshot = ref<AdminSnapshot | null>(null)
 const selectedSnapshotLogs = ref<LogEntry[]>([])
 const isLoadingLogs = ref(false)
 const isDownloading = ref(false)
+const isDeleting = ref(false)
+const deleteError = ref('')
 const downloadResult = ref<{ success: boolean; message: string; url?: string } | null>(null)
 
 // Filter options
@@ -237,6 +240,29 @@ async function handleRefresh() {
     isLoading.value = false
   }
 }
+
+function openDeleteDialog(snapshot: AdminSnapshot) {
+  selectedSnapshot.value = snapshot
+  deleteError.value = ''
+  showDeleteDialog.value = true
+}
+
+async function handleDelete() {
+  if (!selectedSnapshot.value) return
+
+  deleteError.value = ''
+  isDeleting.value = true
+
+  try {
+    await adminStore.deleteSnapshot(selectedSnapshot.value.id)
+    showDeleteDialog.value = false
+    selectedSnapshot.value = null
+  } catch (error: unknown) {
+    deleteError.value = error instanceof Error ? error.message : 'Failed to delete snapshot'
+  } finally {
+    isDeleting.value = false
+  }
+}
 </script>
 
 <template>
@@ -398,13 +424,21 @@ async function handleRefresh() {
                     >
                       Details
                     </Button>
-                    <Button 
-                      variant="secondary" 
-                      size="sm" 
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       :disabled="snapshot.status !== 'completed' || isDownloading"
                       @click="handleDownload(snapshot)"
                     >
                       Download
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="text-destructive hover:text-destructive"
+                      @click="openDeleteDialog(snapshot)"
+                    >
+                      Delete
                     </Button>
                   </div>
                 </td>
@@ -557,6 +591,46 @@ async function handleRefresh() {
           :title="`Logs for ${selectedSnapshot.source_name}`"
           @refresh="refreshLogs"
         />
+      </div>
+    </Dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <Dialog v-model:open="showDeleteDialog">
+      <div class="p-6">
+        <h2 class="text-lg font-semibold mb-4">Delete Snapshot</h2>
+
+        <div v-if="deleteError" class="mb-4 p-3 text-sm text-destructive bg-destructive/10 rounded-md">
+          {{ deleteError }}
+        </div>
+
+        <p class="mb-4">
+          Are you sure you want to delete this snapshot?
+        </p>
+
+        <div v-if="selectedSnapshot" class="p-3 bg-muted/50 rounded-md text-sm mb-4 space-y-1">
+          <div><strong>Source:</strong> {{ selectedSnapshot.source_name || selectedSnapshot.source_id.slice(0, 8) }}</div>
+          <div><strong>Tenant:</strong> {{ selectedSnapshot.tenant_name || selectedSnapshot.tenant_id.slice(0, 8) }}</div>
+          <div><strong>Created:</strong> {{ formatDate(selectedSnapshot.created_at) }}</div>
+          <div><strong>Size:</strong> {{ formatBytes(selectedSnapshot.size_bytes) }}</div>
+        </div>
+
+        <p class="text-sm text-muted-foreground mb-4">
+          This will:
+        </p>
+        <ul class="text-sm text-muted-foreground list-disc list-inside mb-4 space-y-1">
+          <li>Delete the backup files from worker storage</li>
+          <li>Remove the snapshot record from the database</li>
+          <li>This action cannot be undone</li>
+        </ul>
+
+        <div class="flex justify-end gap-3">
+          <Button variant="outline" :disabled="isDeleting" @click="showDeleteDialog = false">
+            Cancel
+          </Button>
+          <Button variant="destructive" :disabled="isDeleting" @click="handleDelete">
+            {{ isDeleting ? 'Deleting...' : 'Delete Snapshot' }}
+          </Button>
+        </div>
       </div>
     </Dialog>
   </div>
