@@ -499,10 +499,21 @@ func (s *Service) EvaluateRetentionPolicy(ctx context.Context, tenantID, sourceI
 	}
 
 	// Rule 2: MaxAgeDays - mark snapshots older than max age for deletion (overrides protection)
+	// Also, when in "within_duration" mode, protect snapshots WITHIN the age window
 	var maxAgeTime time.Time
 	if policy.MaxAgeDays != nil {
 		maxAge := time.Duration(*policy.MaxAgeDays) * 24 * time.Hour
 		maxAgeTime = now.Add(-maxAge)
+
+		// If mode is "within_duration", protect all snapshots within the duration window
+		// This is the key fix: snapshots younger than maxAgeTime should be kept
+		if policy.Mode == "within_duration" {
+			for _, snap := range snapshots {
+				if !snap.CreatedAt.Before(maxAgeTime) {
+					protected[snap.ID] = true
+				}
+			}
+		}
 	}
 
 	// Rule 3: KeepLastN - keep the N most recent snapshots

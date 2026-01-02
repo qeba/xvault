@@ -29,6 +29,8 @@ const createError = ref('')
 const editError = ref('')
 const deleteError = ref('')
 const testResult = ref<{ success: boolean; message: string; details?: string } | null>(null)
+const hasSuccessfulTest = ref(false)
+const hasSuccessfulEditTest = ref(false)
 const triggerResult = ref<{ success: boolean; message: string } | null>(null)
 const editingSource = ref<Source | null>(null)
 const deletingSource = ref<Source | null>(null)
@@ -190,6 +192,7 @@ function getSourceSummary(source: Source): string {
 function openCreateDialog() {
   createError.value = ''
   testResult.value = null
+  hasSuccessfulTest.value = false
   createForm.value = {
     tenant_id: tenantOptions.value[0]?.value || '',
     name: '',
@@ -210,6 +213,7 @@ function openCreateDialog() {
 function openEditDialog(source: Source) {
   editError.value = ''
   testResult.value = null
+  hasSuccessfulEditTest.value = false
   editingSource.value = source
   editForm.value = {
     name: source.name,
@@ -380,6 +384,11 @@ async function handleTestConnection(isEditMode: boolean = false) {
       message: 'Missing required fields',
       details: 'Please fill in host, username, and password/private key before testing'
     }
+    if (isEditMode) {
+      hasSuccessfulEditTest.value = false
+    } else {
+      hasSuccessfulTest.value = false
+    }
     return
   }
 
@@ -396,14 +405,36 @@ async function handleTestConnection(isEditMode: boolean = false) {
       database: form.database || undefined,
     })
     testResult.value = result
+    
+    // Set success flag based on result
+    if (isEditMode) {
+      hasSuccessfulEditTest.value = result.success
+    } else {
+      hasSuccessfulTest.value = result.success
+    }
   } catch (error: unknown) {
     testResult.value = {
       success: false,
       message: 'Test failed',
       details: error instanceof Error ? error.message : 'Unknown error'
     }
+    if (isEditMode) {
+      hasSuccessfulEditTest.value = false
+    } else {
+      hasSuccessfulTest.value = false
+    }
   } finally {
     isTesting.value = false
+  }
+}
+
+// Reset test flag when connection-related fields change
+function resetTestFlag(isEditMode: boolean = false) {
+  testResult.value = null
+  if (isEditMode) {
+    hasSuccessfulEditTest.value = false
+  } else {
+    hasSuccessfulTest.value = false
   }
 }
 
@@ -721,6 +752,7 @@ function onTypeChange(type: SourceType) {
                   v-model="createForm.host"
                   placeholder="192.168.1.100"
                   :disabled="isCreating"
+                  @input="resetTestFlag(false)"
                 />
               </div>
               <div class="space-y-2">
@@ -730,6 +762,7 @@ function onTypeChange(type: SourceType) {
                   v-model.number="createForm.port"
                   type="number"
                   :disabled="isCreating"
+                  @input="resetTestFlag(false)"
                 />
               </div>
             </div>
@@ -741,6 +774,7 @@ function onTypeChange(type: SourceType) {
                 v-model="createForm.username"
                 placeholder="root"
                 :disabled="isCreating"
+                @input="resetTestFlag(false)"
               />
             </div>
 
@@ -834,6 +868,7 @@ function onTypeChange(type: SourceType) {
 ...
 -----END OPENSSH PRIVATE KEY-----"
                 :disabled="isCreating"
+                @input="resetTestFlag(false)"
               ></textarea>
               <Input
                 v-else
@@ -842,6 +877,7 @@ function onTypeChange(type: SourceType) {
                 type="password"
                 placeholder="Enter password"
                 :disabled="isCreating"
+                @input="resetTestFlag(false)"
               />
               <p class="text-xs text-muted-foreground">
                 {{ createForm.credentialType === 'privateKey' 
@@ -849,6 +885,12 @@ function onTypeChange(type: SourceType) {
                    : 'The password will be encrypted before storage.'
                 }}
               </p>
+            </div>
+
+            <!-- Mandatory Test Notice -->
+            <div v-if="!hasSuccessfulTest" class="mt-4 p-3 rounded-md text-sm bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+              <div class="font-medium">⚠️ Test connection required</div>
+              <div class="text-xs mt-1 opacity-80">You must test the connection successfully before creating the source.</div>
             </div>
 
             <!-- Test Connection Result -->
@@ -868,7 +910,7 @@ function onTypeChange(type: SourceType) {
             <Button type="button" variant="secondary" :disabled="isCreating || isTesting" @click="handleTestConnection(false)">
               {{ isTesting ? 'Testing...' : 'Test Connection' }}
             </Button>
-            <Button type="submit" :disabled="isCreating || isTesting">
+            <Button type="submit" :disabled="isCreating || isTesting || !hasSuccessfulTest">
               {{ isCreating ? 'Creating...' : 'Create Source' }}
             </Button>
           </div>
@@ -922,17 +964,17 @@ function onTypeChange(type: SourceType) {
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2">
                 <Label for="edit-host">Host</Label>
-                <Input id="edit-host" v-model="editForm.host" :disabled="isUpdating" />
+                <Input id="edit-host" v-model="editForm.host" :disabled="isUpdating" @input="resetTestFlag(true)" />
               </div>
               <div class="space-y-2">
                 <Label for="edit-port">Port</Label>
-                <Input id="edit-port" v-model.number="editForm.port" type="number" :disabled="isUpdating" />
+                <Input id="edit-port" v-model.number="editForm.port" type="number" :disabled="isUpdating" @input="resetTestFlag(true)" />
               </div>
             </div>
 
             <div class="space-y-2 mt-4">
               <Label for="edit-username">Username</Label>
-              <Input id="edit-username" v-model="editForm.username" :disabled="isUpdating" />
+              <Input id="edit-username" v-model="editForm.username" :disabled="isUpdating" @input="resetTestFlag(true)" />
             </div>
 
             <!-- Type-specific fields -->
@@ -979,6 +1021,7 @@ function onTypeChange(type: SourceType) {
                 class="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring font-mono"
                 placeholder="Leave empty to keep existing key"
                 :disabled="isUpdating"
+                @input="resetTestFlag(true)"
               ></textarea>
               <Input
                 v-else
@@ -987,7 +1030,14 @@ function onTypeChange(type: SourceType) {
                 type="password"
                 placeholder="Leave empty to keep existing"
                 :disabled="isUpdating"
+                @input="resetTestFlag(true)"
               />
+            </div>
+
+            <!-- Mandatory Test Notice for Edit (when credential is provided) -->
+            <div v-if="editForm.credential && !hasSuccessfulEditTest" class="mt-4 p-3 rounded-md text-sm bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+              <div class="font-medium">⚠️ Test connection required</div>
+              <div class="text-xs mt-1 opacity-80">You must test the new connection successfully before updating.</div>
             </div>
 
             <!-- Test Connection Result for Edit -->
@@ -1013,7 +1063,7 @@ function onTypeChange(type: SourceType) {
             >
               {{ isTesting ? 'Testing...' : 'Test Connection' }}
             </Button>
-            <Button type="submit" :disabled="isUpdating || isTesting">
+            <Button type="submit" :disabled="isUpdating || isTesting || (!!editForm.credential && !hasSuccessfulEditTest)">
               {{ isUpdating ? 'Updating...' : 'Update Source' }}
             </Button>
           </div>
