@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed } from 'vue'
 import type { LogEntry, LogLevel } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
 import Card from '@/components/ui/card/Card.vue'
@@ -25,8 +25,6 @@ const emit = defineEmits<{
 
 const levelFilter = ref<LogLevel | 'all'>('all')
 const searchQuery = ref('')
-const autoScroll = ref(false)
-const logContainer = ref<HTMLElement | null>(null)
 const displayLimit = ref(10)
 const DEFAULT_LIMIT = 10
 const LIMIT_INCREMENT = 20
@@ -65,13 +63,15 @@ const filteredLogs = computed(() => {
 })
 
 // Display only the limited number of logs
+// Backend already returns logs ordered by timestamp DESC (newest first)
 const displayedLogs = computed(() => {
-  // When searching, show all matching results
-  if (searchQuery.value || levelFilter.value !== 'all') {
-    return filteredLogs.value
+  // When not filtering, apply pagination (show newest N logs)
+  if (!searchQuery.value && levelFilter.value === 'all') {
+    return filteredLogs.value.slice(0, displayLimit.value)
   }
-  // Otherwise, apply pagination
-  return filteredLogs.value.slice(-displayLimit.value)
+
+  // When filtering, show all matching results (already newest first from backend)
+  return filteredLogs.value
 })
 
 // Stats based on filtered results (search works correctly)
@@ -185,40 +185,15 @@ function clearFilters() {
 // Pagination functions
 function loadMore() {
   displayLimit.value += LIMIT_INCREMENT
-  // Auto-scroll to bottom after loading more (showing latest logs)
-  nextTick(() => {
-    if (autoScroll.value && logContainer.value) {
-      logContainer.value.scrollTop = logContainer.value.scrollHeight
-    }
-  })
 }
 
 function showAll() {
   displayLimit.value = filteredLogs.value.length
-  nextTick(() => {
-    if (autoScroll.value && logContainer.value) {
-      logContainer.value.scrollTop = logContainer.value.scrollHeight
-    }
-  })
 }
 
 function showLess() {
   displayLimit.value = DEFAULT_LIMIT
 }
-
-// Auto-scroll to bottom (logs are ordered oldest → newest, so bottom = latest)
-function scrollToBottom() {
-  if (autoScroll.value && logContainer.value) {
-    logContainer.value.scrollTop = logContainer.value.scrollHeight
-  }
-}
-
-// Watch for new logs to auto-scroll if enabled
-watch(() => props.logs, () => {
-  if (autoScroll.value) {
-    setTimeout(scrollToBottom, 50)
-  }
-}, { deep: true })
 </script>
 
 <template>
@@ -307,14 +282,6 @@ watch(() => props.logs, () => {
           </svg>
           Clear
         </Button>
-        <label class="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer hover:text-foreground transition-colors whitespace-nowrap">
-          <input
-            v-model="autoScroll"
-            type="checkbox"
-            class="h-4 w-4 rounded border-input accent-primary"
-          />
-          Auto-scroll
-        </label>
       </div>
     </CardHeader>
     
@@ -339,7 +306,6 @@ watch(() => props.logs, () => {
       <!-- Log Entries -->
       <div
         v-else
-        ref="logContainer"
         class="h-[60vh] min-h-[500px] max-h-[70vh] overflow-y-auto font-mono text-sm border-t"
       >
         <div class="divide-y divide-border/50">
@@ -404,7 +370,7 @@ watch(() => props.logs, () => {
         <div v-if="!searchQuery && levelFilter === 'all' && filteredLogs.length > DEFAULT_LIMIT" class="sticky bottom-0 left-0 right-0 px-4 py-3 bg-background/95 backdrop-blur border-t flex items-center justify-center gap-2">
           <!-- Show number of hidden logs -->
           <span v-if="logStats.hidden > 0" class="text-xs text-muted-foreground mr-2">
-            {{ logStats.hidden }} older logs hidden
+            Showing newest {{ logStats.displayed }} of {{ logStats.total }} logs
           </span>
 
           <!-- Load More button -->
