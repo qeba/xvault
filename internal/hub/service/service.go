@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -43,6 +44,33 @@ func NewService(repo *repository.Repository, redis *redis.Client, encryptionKEK 
 		redis:         redis,
 		encryptionKEK: encryptionKEK,
 	}
+}
+
+// LogSystemEvent logs a system event to the system_logs table (for hub-side logging)
+// This is used to log infrastructure errors, scheduler events, and other hub-side events
+func (s *Service) LogSystemEvent(ctx context.Context, level, message string, details map[string]any) {
+	detailsJSON := json.RawMessage("{}")
+	if details != nil {
+		if data, err := json.Marshal(details); err == nil {
+			detailsJSON = data
+		}
+	}
+
+	if err := s.repo.CreateLog(ctx, level, message, nil, nil, nil, nil, nil, detailsJSON); err != nil {
+		// Fall back to stdout if DB logging fails
+		log.Printf("[%s] %s (db log failed: %v)", level, message, err)
+	}
+}
+
+// LogSystemError logs a system error to the system_logs table
+func (s *Service) LogSystemError(ctx context.Context, message string, err error, details map[string]any) {
+	if details == nil {
+		details = make(map[string]any)
+	}
+	if err != nil {
+		details["error"] = err.Error()
+	}
+	s.LogSystemEvent(ctx, "error", message, details)
 }
 
 // CreateTenantRequest is the request to create a tenant
@@ -215,6 +243,11 @@ func (s *Service) EnqueueBackupJob(ctx context.Context, tenantID string, req Enq
 	}
 
 	if err := s.redis.LPush(ctx, JobQueueKey, jobMsgJSON).Err(); err != nil {
+		s.LogSystemError(ctx, "Redis: failed to enqueue backup job", err, map[string]any{
+			"job_id":    job.ID,
+			"tenant_id": tenantID,
+			"source_id": req.SourceID,
+		})
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
@@ -370,11 +403,41 @@ func (s *Service) RegisterWorker(ctx context.Context, req types.WorkerRegisterRe
 
 // WorkerHeartbeat handles a worker heartbeat request
 func (s *Service) WorkerHeartbeat(ctx context.Context, req types.WorkerHeartbeatRequest) error {
-	if err := s.repo.UpdateWorkerHeartbeat(ctx, req.WorkerID, req.Status); err != nil {
+	// Serialize system metrics if present
+	var metricsJSON json.RawMessage
+	if req.SystemMetrics != nil {
+		data, err := json.Marshal(req.SystemMetrics)
+		if err != nil {
+			return fmt.Errorf("failed to marshal system metrics: %w", err)
+		}
+		metricsJSON = data
+	}
+
+	if err := s.repo.UpdateWorkerHeartbeat(ctx, req.WorkerID, req.Status, metricsJSON); err != nil {
 		return fmt.Errorf("failed to update heartbeat: %w", err)
 	}
 
 	return nil
+}
+
+// ListWorkers retrieves all workers with their status and metrics
+func (s *Service) ListWorkers(ctx context.Context) ([]*repository.Worker, error) {
+	workers, err := s.repo.ListWorkers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workers: %w", err)
+	}
+
+	return workers, nil
+}
+
+// GetWorker retrieves a worker by ID
+func (s *Service) GetWorker(ctx context.Context, workerID string) (*repository.Worker, error) {
+	worker, err := s.repo.GetWorker(ctx, workerID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get worker: %w", err)
+	}
+
+	return worker, nil
 }
 
 // ListSnapshots retrieves snapshots for a source
@@ -598,6 +661,11 @@ func (s *Service) EnqueueDeleteJob(ctx context.Context, snapshotID string) (*rep
 	}
 
 	if err := s.redis.LPush(ctx, JobQueueKey, jobMsgJSON).Err(); err != nil {
+		s.LogSystemError(ctx, "Redis: failed to enqueue delete snapshot job", err, map[string]any{
+			"job_id":      job.ID,
+			"tenant_id":   snapshot.TenantID,
+			"snapshot_id": snapshotID,
+		})
 		return nil, fmt.Errorf("failed to enqueue delete job: %w", err)
 	}
 
@@ -610,6 +678,15 @@ func (s *Service) RunRetentionEvaluationForSource(ctx context.Context, sourceID 
 	// Get schedule for this source
 	schedule, err := s.repo.GetScheduleForSource(ctx, sourceID)
 	if err != nil {
+		// No schedule means no retention policy - skip gracefully
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("retention: skipping source %s (no schedule configured)", sourceID)
+			return &types.RetentionEvaluationResult{
+				SnapshotsToKeep:   []string{},
+				SnapshotsToDelete: []string{},
+				Summary:           "no schedule configured, retention skipped",
+			}, nil
+		}
 		return nil, fmt.Errorf("failed to get schedule: %w", err)
 	}
 
@@ -720,6 +797,9 @@ func (s *Service) maybeTriggerRetentionForSource(ctx context.Context, sourceID s
 	lockKey := RetentionLockKey + sourceID
 	acquired, err := s.redis.SetNX(ctx, lockKey, "1", RetentionCooldown).Result()
 	if err != nil {
+		s.LogSystemError(ctx, "Redis: failed to acquire retention lock", err, map[string]any{
+			"source_id": sourceID,
+		})
 		log.Printf("retention: failed to acquire lock for source %s: %v", sourceID, err)
 		return
 	}
@@ -738,6 +818,9 @@ func (s *Service) maybeTriggerRetentionForSource(ctx context.Context, sourceID s
 
 	result, err := s.RunRetentionEvaluationForSource(evalCtx, sourceID)
 	if err != nil {
+		s.LogSystemError(ctx, "Retention: evaluation failed", err, map[string]any{
+			"source_id": sourceID,
+		})
 		log.Printf("retention: failed for source %s: %v", sourceID, err)
 		return
 	}
@@ -1022,6 +1105,11 @@ func (s *Service) EnqueueRestoreJob(ctx context.Context, tenantID, snapshotID st
 	}
 
 	if err := s.redis.LPush(ctx, JobQueueKey, jobData).Err(); err != nil {
+		s.LogSystemError(ctx, "Redis: failed to enqueue restore job", err, map[string]any{
+			"job_id":      job.ID,
+			"tenant_id":   tenantID,
+			"snapshot_id": snapshotID,
+		})
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
@@ -1788,6 +1876,10 @@ func (s *Service) TriggerBackupAdmin(ctx context.Context, sourceID string) (*rep
 	}
 
 	if err := s.redis.LPush(ctx, JobQueueKey, jobMsgJSON).Err(); err != nil {
+		s.LogSystemError(ctx, "Redis: failed to enqueue admin-triggered backup job", err, map[string]any{
+			"job_id":    job.ID,
+			"source_id": sourceID,
+		})
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
@@ -1929,6 +2021,11 @@ func (s *Service) EnqueueScheduledBackup(ctx context.Context, schedule *reposito
 	}
 
 	if err := s.redis.LPush(ctx, JobQueueKey, jobMsgJSON).Err(); err != nil {
+		s.LogSystemError(ctx, "Redis: failed to enqueue scheduled backup job", err, map[string]any{
+			"job_id":      job.ID,
+			"schedule_id": schedule.ID,
+			"source_id":   schedule.SourceID,
+		})
 		return nil, fmt.Errorf("failed to enqueue job: %w", err)
 	}
 
@@ -2024,4 +2121,163 @@ func (s *Service) GetLogsForSource(ctx context.Context, sourceID string, limit i
 		return nil, fmt.Errorf("failed to get logs for source: %w", err)
 	}
 	return logs, nil
+}
+
+// ListAllLogsAdminParams contains parameters for listing all logs
+type ListAllLogsAdminParams struct {
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	Level      string `json:"level"`       // Filter by level: debug, info, warn, error, all
+	Search     string `json:"search"`      // Search in message
+	WorkerID   string `json:"worker_id"`   // Filter by worker_id
+	JobID      string `json:"job_id"`      // Filter by job_id
+	SnapshotID string `json:"snapshot_id"` // Filter by snapshot_id
+	SourceID   string `json:"source_id"`   // Filter by source_id
+	ScheduleID string `json:"schedule_id"` // Filter by schedule_id
+}
+
+// ListAllLogsAdminResult contains the result of listing all logs
+type ListAllLogsAdminResult struct {
+	Logs   []*repository.LogEntry `json:"logs"`
+	Total  int                    `json:"total"`
+	Limit  int                    `json:"limit"`
+	Offset int                    `json:"offset"`
+}
+
+// ListAllLogsAdmin retrieves all system logs with filtering and pagination (admin only)
+func (s *Service) ListAllLogsAdmin(ctx context.Context, params ListAllLogsAdminParams) (*ListAllLogsAdminResult, error) {
+	repoParams := repository.ListAllLogsAdminParams{
+		Limit:      params.Limit,
+		Offset:     params.Offset,
+		Level:      params.Level,
+		Search:     params.Search,
+		WorkerID:   params.WorkerID,
+		JobID:      params.JobID,
+		SnapshotID: params.SnapshotID,
+		SourceID:   params.SourceID,
+		ScheduleID: params.ScheduleID,
+	}
+
+	result, err := s.repo.ListAllLogsAdmin(ctx, repoParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list all logs: %w", err)
+	}
+
+	return &ListAllLogsAdminResult{
+		Logs:   result.Logs,
+		Total:  result.Total,
+		Limit:  params.Limit,
+		Offset: params.Offset,
+	}, nil
+}
+
+// ==================== AUDIT EVENTS ====================
+
+// AuditAction represents the type of action being audited
+type AuditAction string
+
+const (
+	AuditActionCreateSource   AuditAction = "create_source"
+	AuditActionUpdateSource   AuditAction = "update_source"
+	AuditActionDeleteSource   AuditAction = "delete_source"
+	AuditActionCreateSchedule AuditAction = "create_schedule"
+	AuditActionUpdateSchedule AuditAction = "update_schedule"
+	AuditActionDeleteSchedule AuditAction = "delete_schedule"
+	AuditActionDeleteSnapshot AuditAction = "delete_snapshot"
+	AuditActionTriggerBackup  AuditAction = "trigger_backup"
+	AuditActionCreateTenant   AuditAction = "create_tenant"
+	AuditActionDeleteTenant   AuditAction = "delete_tenant"
+	AuditActionCreateUser     AuditAction = "create_user"
+	AuditActionUpdateUser     AuditAction = "update_user"
+	AuditActionDeleteUser     AuditAction = "delete_user"
+	AuditActionUpdateSetting  AuditAction = "update_setting"
+	AuditActionLogin          AuditAction = "login"
+	AuditActionLogout         AuditAction = "logout"
+)
+
+// AuditTargetType represents the type of resource being audited
+type AuditTargetType string
+
+const (
+	AuditTargetSource   AuditTargetType = "source"
+	AuditTargetSchedule AuditTargetType = "schedule"
+	AuditTargetSnapshot AuditTargetType = "snapshot"
+	AuditTargetTenant   AuditTargetType = "tenant"
+	AuditTargetUser     AuditTargetType = "user"
+	AuditTargetSetting  AuditTargetType = "setting"
+)
+
+// CreateAuditEventRequest contains parameters for creating an audit event
+type CreateAuditEventRequest struct {
+	TenantID    *string         `json:"tenant_id,omitempty"`
+	ActorUserID *string         `json:"actor_user_id,omitempty"`
+	Action      AuditAction     `json:"action"`
+	TargetType  AuditTargetType `json:"target_type"`
+	TargetID    string          `json:"target_id"`
+	TargetName  string          `json:"target_name"` // Human-readable name for display
+	Details     json.RawMessage `json:"details,omitempty"`
+	IPAddress   string          `json:"ip_address,omitempty"`
+}
+
+// CreateAuditEvent creates a new audit event
+func (s *Service) CreateAuditEvent(ctx context.Context, req CreateAuditEventRequest) error {
+	var ipPtr *string
+	if req.IPAddress != "" {
+		ipPtr = &req.IPAddress
+	}
+
+	action := string(req.Action)
+	targetType := string(req.TargetType)
+	targetName := req.TargetName
+
+	_, err := s.repo.CreateAuditEvent(ctx, req.TenantID, req.ActorUserID, action, &targetType, &req.TargetID, &targetName, req.Details, ipPtr)
+	if err != nil {
+		return fmt.Errorf("failed to create audit event: %w", err)
+	}
+
+	return nil
+}
+
+// ListAuditEventsParams contains parameters for listing audit events
+type ListAuditEventsParams struct {
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	Action     string `json:"action"`      // Filter by action
+	TargetType string `json:"target_type"` // Filter by target type
+	ActorID    string `json:"actor_id"`    // Filter by actor user ID
+	TenantID   string `json:"tenant_id"`   // Filter by tenant ID
+	Search     string `json:"search"`      // Search in action
+}
+
+// ListAuditEventsResult contains the result of listing audit events
+type ListAuditEventsResult struct {
+	Events []*repository.AuditEvent `json:"events"`
+	Total  int                      `json:"total"`
+	Limit  int                      `json:"limit"`
+	Offset int                      `json:"offset"`
+}
+
+// ListAuditEventsAdmin retrieves all audit events with filtering and pagination (admin only)
+func (s *Service) ListAuditEventsAdmin(ctx context.Context, params ListAuditEventsParams) (*ListAuditEventsResult, error) {
+	repoParams := repository.ListAuditEventsParams{
+		Limit:      params.Limit,
+		Offset:     params.Offset,
+		Action:     params.Action,
+		TargetType: params.TargetType,
+		ActorID:    params.ActorID,
+		TenantID:   params.TenantID,
+		Search:     params.Search,
+	}
+
+	result, err := s.repo.ListAuditEventsAdmin(ctx, repoParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list audit events: %w", err)
+	}
+
+	return &ListAuditEventsResult{
+		Events: result.Events,
+		Total:  result.Total,
+		Limit:  params.Limit,
+		Offset: params.Offset,
+	}, nil
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	middlewarepkg "xvault/internal/hub/middleware"
+	"xvault/internal/hub/repository"
 	"xvault/internal/hub/service"
 	"xvault/pkg/types"
 
@@ -67,6 +68,9 @@ func (h *Handlers) HandleCreateTenant(c *fiber.Ctx) error {
 		log.Printf("failed to create tenant: %v", err)
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create tenant")
 	}
+
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionCreateTenant, service.AuditTargetTenant, resp.Tenant.ID, resp.Tenant.Name, &resp.Tenant.ID, nil)
 
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
@@ -824,6 +828,9 @@ func (h *Handlers) HandleUpdateSetting(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update setting")
 	}
 
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionUpdateSetting, service.AuditTargetSetting, setting.Key, setting.Key, nil, nil)
+
 	return c.JSON(setting)
 }
 
@@ -889,6 +896,9 @@ func (h *Handlers) HandleCreateUser(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create user")
 	}
 
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionCreateUser, service.AuditTargetUser, user.ID, user.Email, &user.TenantID, nil)
+
 	return c.Status(fiber.StatusCreated).JSON(user)
 }
 
@@ -914,6 +924,9 @@ func (h *Handlers) HandleUpdateUser(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update user")
 	}
 
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionUpdateUser, service.AuditTargetUser, user.ID, user.Email, &user.TenantID, nil)
+
 	return c.JSON(user)
 }
 
@@ -928,10 +941,22 @@ func (h *Handlers) HandleDeleteUser(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
 	}
 
+	// Get user info for audit log before deleting
+	user, _ := h.service.GetUser(ctx, id)
+	userEmail := id
+	var tenantID *string
+	if user != nil {
+		userEmail = user.Email
+		tenantID = &user.TenantID
+	}
+
 	if err := h.service.DeleteUser(ctx, id); err != nil {
 		log.Printf("failed to delete user: %v", err)
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete user")
 	}
+
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionDeleteUser, service.AuditTargetUser, id, userEmail, tenantID, nil)
 
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
@@ -985,10 +1010,20 @@ func (h *Handlers) HandleDeleteTenant(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
 	}
 
+	// Get tenant name for audit log before deleting
+	tenant, _ := h.service.GetTenant(ctx, id)
+	tenantName := id
+	if tenant != nil {
+		tenantName = tenant.Name
+	}
+
 	if err := h.service.DeleteTenant(ctx, id); err != nil {
 		log.Printf("failed to delete tenant: %v", err)
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete tenant")
 	}
+
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionDeleteTenant, service.AuditTargetTenant, id, tenantName, &id, nil)
 
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
@@ -1074,6 +1109,9 @@ func (h *Handlers) HandleCreateSourceAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create source")
 	}
 
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionCreateSource, service.AuditTargetSource, source.ID, source.Name, &source.TenantID, nil)
+
 	return c.Status(fiber.StatusCreated).JSON(source)
 }
 
@@ -1099,6 +1137,9 @@ func (h *Handlers) HandleUpdateSourceAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update source")
 	}
 
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionUpdateSource, service.AuditTargetSource, id, source.Name, &source.TenantID, nil)
+
 	return c.JSON(source)
 }
 
@@ -1113,10 +1154,22 @@ func (h *Handlers) HandleDeleteSourceAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
 	}
 
+	// Get source info before deletion for audit log
+	source, _ := h.service.GetSource(ctx, id)
+	var sourceName string
+	var tenantID *string
+	if source != nil {
+		sourceName = source.Name
+		tenantID = &source.TenantID
+	}
+
 	if err := h.service.DeleteSource(ctx, id); err != nil {
 		log.Printf("failed to delete source: %v", err)
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete source")
 	}
+
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionDeleteSource, service.AuditTargetSource, id, sourceName, tenantID, nil)
 
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
@@ -1156,11 +1209,23 @@ func (h *Handlers) HandleTriggerBackupAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
 	}
 
+	// Get source info for audit log
+	source, _ := h.service.GetSource(ctx, id)
+	var sourceName string
+	var tenantID *string
+	if source != nil {
+		sourceName = source.Name
+		tenantID = &source.TenantID
+	}
+
 	job, err := h.service.TriggerBackupAdmin(ctx, id)
 	if err != nil {
 		log.Printf("failed to trigger backup: %v", err)
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to trigger backup")
 	}
+
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionTriggerBackup, service.AuditTargetSource, id, sourceName, tenantID, nil)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message": "Backup job created",
@@ -1226,6 +1291,10 @@ func (h *Handlers) HandleCreateScheduleAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to create schedule")
 	}
 
+	// Audit log
+	scheduleName := "Schedule for " + req.SourceID[:8]
+	h.createAuditEvent(ctx, c, service.AuditActionCreateSchedule, service.AuditTargetSchedule, schedule.ID, scheduleName, &schedule.TenantID, nil)
+
 	return c.Status(fiber.StatusCreated).JSON(schedule)
 }
 
@@ -1251,6 +1320,10 @@ func (h *Handlers) HandleUpdateScheduleAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to update schedule")
 	}
 
+	// Audit log
+	scheduleName := "Schedule " + id[:8]
+	h.createAuditEvent(ctx, c, service.AuditActionUpdateSchedule, service.AuditTargetSchedule, id, scheduleName, &schedule.TenantID, nil)
+
 	return c.JSON(schedule)
 }
 
@@ -1265,10 +1338,21 @@ func (h *Handlers) HandleDeleteScheduleAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("id is required"), "Validation failed")
 	}
 
+	// Get schedule info before deletion for audit log
+	schedule, _ := h.service.GetSchedule(ctx, id)
+	var tenantID *string
+	scheduleName := "Schedule " + id[:8]
+	if schedule != nil {
+		tenantID = &schedule.TenantID
+	}
+
 	if err := h.service.DeleteSchedule(ctx, id); err != nil {
 		log.Printf("failed to delete schedule: %v", err)
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to delete schedule")
 	}
+
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionDeleteSchedule, service.AuditTargetSchedule, id, scheduleName, tenantID, nil)
 
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
@@ -1353,6 +1437,14 @@ func (h *Handlers) HandleDeleteSnapshotAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusBadRequest, fmt.Errorf("snapshot_id is required"), "Validation failed")
 	}
 
+	// Get snapshot info for audit log
+	snapshot, _ := h.service.GetSnapshot(ctx, snapshotID)
+	var tenantID *string
+	snapshotName := "Snapshot " + snapshotID[:8]
+	if snapshot != nil {
+		tenantID = &snapshot.TenantID
+	}
+
 	// Enqueue delete job (worker will clean up storage, then DB record is removed)
 	job, err := h.service.EnqueueDeleteJob(ctx, snapshotID)
 	if err != nil {
@@ -1360,13 +1452,16 @@ func (h *Handlers) HandleDeleteSnapshotAdmin(c *fiber.Ctx) error {
 		return sendError(c, fiber.StatusInternalServerError, err, "Failed to enqueue delete job")
 	}
 
+	// Audit log
+	h.createAuditEvent(ctx, c, service.AuditActionDeleteSnapshot, service.AuditTargetSnapshot, snapshotID, snapshotName, tenantID, nil)
+
 	log.Printf("enqueued delete job %s for snapshot %s", job.ID, snapshotID)
 
 	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
-		"message":       "Delete job enqueued successfully",
-		"job_id":        job.ID,
-		"snapshot_id":   snapshotID,
-		"worker_id":     job.TargetWorkerID,
+		"message":     "Delete job enqueued successfully",
+		"job_id":      job.ID,
+		"snapshot_id": snapshotID,
+		"worker_id":   job.TargetWorkerID,
 	})
 }
 
@@ -1393,6 +1488,39 @@ func (h *Handlers) HandleGetLogsForSource(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"logs": logs})
+}
+
+// HandleListAllLogsAdmin handles GET /api/v1/admin/logs
+// Returns all system logs with filtering and pagination (admin only)
+func (h *Handlers) HandleListAllLogsAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(10 * time.Second)
+	defer cancel()
+
+	// Parse query parameters
+	params := service.ListAllLogsAdminParams{
+		Limit:      c.QueryInt("limit", 100),
+		Offset:     c.QueryInt("offset", 0),
+		Level:      c.Query("level", ""),
+		Search:     c.Query("search", ""),
+		WorkerID:   c.Query("worker_id", ""),
+		JobID:      c.Query("job_id", ""),
+		SnapshotID: c.Query("snapshot_id", ""),
+		SourceID:   c.Query("source_id", ""),
+		ScheduleID: c.Query("schedule_id", ""),
+	}
+
+	// Validate and cap limit
+	if params.Limit > 1000 {
+		params.Limit = 1000
+	}
+
+	result, err := h.service.ListAllLogsAdmin(ctx, params)
+	if err != nil {
+		log.Printf("failed to list all logs: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list logs")
+	}
+
+	return c.JSON(result)
 }
 
 // HandleCreateLog handles POST /internal/logs
@@ -1422,4 +1550,181 @@ func (h *Handlers) HandleCreateLog(c *fiber.Ctx) error {
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"ok": true})
+}
+
+// HandleListAuditEventsAdmin handles GET /api/v1/admin/audit
+// Returns all audit events with filtering and pagination (admin only)
+func (h *Handlers) HandleListAuditEventsAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(10 * time.Second)
+	defer cancel()
+
+	// Parse query parameters
+	params := service.ListAuditEventsParams{
+		Limit:      c.QueryInt("limit", 100),
+		Offset:     c.QueryInt("offset", 0),
+		Action:     c.Query("action", ""),
+		TargetType: c.Query("target_type", ""),
+		ActorID:    c.Query("actor_id", ""),
+		TenantID:   c.Query("tenant_id", ""),
+		Search:     c.Query("search", ""),
+	}
+
+	// Validate and cap limit
+	if params.Limit > 1000 {
+		params.Limit = 1000
+	}
+
+	result, err := h.service.ListAuditEventsAdmin(ctx, params)
+	if err != nil {
+		log.Printf("failed to list audit events: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list audit events")
+	}
+
+	return c.JSON(result)
+}
+
+// createAuditEvent is a helper to create audit events in handlers
+func (h *Handlers) createAuditEvent(ctx context.Context, c *fiber.Ctx, action service.AuditAction, targetType service.AuditTargetType, targetID, targetName string, tenantID *string, details json.RawMessage) {
+	// Get user ID from context
+	userID, _ := middlewarepkg.GetUserID(c)
+	var userIDPtr *string
+	if userID != "" {
+		userIDPtr = &userID
+	}
+
+	// Get IP address
+	ip := c.IP()
+
+	req := service.CreateAuditEventRequest{
+		TenantID:    tenantID,
+		ActorUserID: userIDPtr,
+		Action:      action,
+		TargetType:  targetType,
+		TargetID:    targetID,
+		TargetName:  targetName,
+		Details:     details,
+		IPAddress:   ip,
+	}
+
+	// Create audit event in background - don't block the response
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.service.CreateAuditEvent(bgCtx, req); err != nil {
+			log.Printf("failed to create audit event: %v", err)
+		}
+	}()
+}
+
+// HandleListWorkersAdmin handles GET /api/v1/admin/workers
+// Returns all workers with their status and system metrics (admin only)
+func (h *Handlers) HandleListWorkersAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(10 * time.Second)
+	defer cancel()
+
+	workers, err := h.service.ListWorkers(ctx)
+	if err != nil {
+		log.Printf("failed to list workers: %v", err)
+		return sendError(c, fiber.StatusInternalServerError, err, "Failed to list workers")
+	}
+
+	// Build response with computed health status
+	type workerResponse struct {
+		ID              string          `json:"id"`
+		Name            string          `json:"name"`
+		Status          string          `json:"status"`
+		Health          string          `json:"health"` // healthy, warning, critical, offline
+		Capabilities    json.RawMessage `json:"capabilities"`
+		StorageBasePath string          `json:"storage_base_path"`
+		SystemMetrics   json.RawMessage `json:"system_metrics,omitempty"`
+		LastSeenAt      *time.Time      `json:"last_seen_at,omitempty"`
+		CreatedAt       time.Time       `json:"created_at"`
+		UpdatedAt       time.Time       `json:"updated_at"`
+	}
+
+	result := make([]workerResponse, len(workers))
+	for i, w := range workers {
+		// Compute health status based on last_seen and metrics
+		health := computeWorkerHealth(w)
+
+		result[i] = workerResponse{
+			ID:              w.ID,
+			Name:            w.Name,
+			Status:          w.Status,
+			Health:          health,
+			Capabilities:    w.Capabilities,
+			StorageBasePath: w.StorageBasePath,
+			SystemMetrics:   w.SystemMetrics,
+			LastSeenAt:      w.LastSeenAt,
+			CreatedAt:       w.CreatedAt,
+			UpdatedAt:       w.UpdatedAt,
+		}
+	}
+
+	return c.JSON(fiber.Map{
+		"workers": result,
+		"total":   len(result),
+	})
+}
+
+// HandleGetWorkerAdmin handles GET /api/v1/admin/workers/:id
+// Returns a single worker with its status and system metrics (admin only)
+func (h *Handlers) HandleGetWorkerAdmin(c *fiber.Ctx) error {
+	ctx, cancel := contextWithTimeout(10 * time.Second)
+	defer cancel()
+
+	workerID := c.Params("id")
+	if workerID == "" {
+		return sendError(c, fiber.StatusBadRequest, nil, "Worker ID is required")
+	}
+
+	worker, err := h.service.GetWorker(ctx, workerID)
+	if err != nil {
+		log.Printf("failed to get worker: %v", err)
+		return sendError(c, fiber.StatusNotFound, err, "Worker not found")
+	}
+
+	health := computeWorkerHealth(worker)
+
+	return c.JSON(fiber.Map{
+		"id":                worker.ID,
+		"name":              worker.Name,
+		"status":            worker.Status,
+		"health":            health,
+		"capabilities":      worker.Capabilities,
+		"storage_base_path": worker.StorageBasePath,
+		"system_metrics":    worker.SystemMetrics,
+		"last_seen_at":      worker.LastSeenAt,
+		"created_at":        worker.CreatedAt,
+		"updated_at":        worker.UpdatedAt,
+	})
+}
+
+// computeWorkerHealth calculates the health status of a worker based on last_seen and metrics
+func computeWorkerHealth(w *repository.Worker) string {
+	// Check if worker is offline (no heartbeat in 2 minutes)
+	if w.LastSeenAt == nil || time.Since(*w.LastSeenAt) > 2*time.Minute {
+		return "offline"
+	}
+
+	// If we have system metrics, check them for warning/critical thresholds
+	if len(w.SystemMetrics) > 0 {
+		var metrics struct {
+			CPUPercent    float64 `json:"cpu_percent"`
+			MemoryPercent float64 `json:"memory_percent"`
+			DiskPercent   float64 `json:"disk_percent"`
+		}
+		if err := json.Unmarshal(w.SystemMetrics, &metrics); err == nil {
+			// Critical if any resource is above 95%
+			if metrics.CPUPercent > 95 || metrics.MemoryPercent > 95 || metrics.DiskPercent > 95 {
+				return "critical"
+			}
+			// Warning if any resource is above 80%
+			if metrics.CPUPercent > 80 || metrics.MemoryPercent > 80 || metrics.DiskPercent > 80 {
+				return "warning"
+			}
+		}
+	}
+
+	return "healthy"
 }

@@ -11,6 +11,8 @@ import {
   Archive,
   Settings,
   Menu,
+  ScrollText,
+  Cpu,
 } from 'lucide-vue-next'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
 import UserDropdown from '@/components/UserDropdown.vue'
@@ -28,6 +30,8 @@ const navigation = [
   { name: 'Sources', href: '/admin/sources', icon: Server },
   { name: 'Schedules', href: '/admin/schedules', icon: Clock },
   { name: 'Snapshots', href: '/admin/snapshots', icon: Archive },
+  { name: 'Logs', href: '/admin/logs', icon: ScrollText },
+  { name: 'Workers', href: '/admin/workers', icon: Cpu },
   { name: 'Settings', href: '/admin/settings', icon: Settings },
 ]
 

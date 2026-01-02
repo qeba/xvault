@@ -235,8 +235,23 @@ type WorkerRegisterRequest struct {
 
 // WorkerHeartbeatRequest is the request body for worker heartbeats
 type WorkerHeartbeatRequest struct {
-	WorkerID string `json:"worker_id"`
-	Status   string `json:"status"` // "online", "offline", "draining"
+	WorkerID      string         `json:"worker_id"`
+	Status        string         `json:"status"` // "online", "offline", "draining"
+	SystemMetrics *SystemMetrics `json:"system_metrics,omitempty"`
+}
+
+// SystemMetrics contains system resource usage information from a worker
+type SystemMetrics struct {
+	CPUPercent       float64 `json:"cpu_percent"`
+	MemoryPercent    float64 `json:"memory_percent"`
+	MemoryTotalBytes int64   `json:"memory_total_bytes"`
+	MemoryUsedBytes  int64   `json:"memory_used_bytes"`
+	DiskTotalBytes   int64   `json:"disk_total_bytes"`
+	DiskUsedBytes    int64   `json:"disk_used_bytes"`
+	DiskFreeBytes    int64   `json:"disk_free_bytes"`
+	DiskPercent      float64 `json:"disk_percent"`
+	ActiveJobs       int     `json:"active_jobs"`
+	UptimeSeconds    int64   `json:"uptime_seconds"`
 }
 
 // RetentionPolicy defines how long snapshots should be kept

@@ -178,10 +178,6 @@ onMounted(async () => {
     await adminStore.fetchSources()
     await adminStore.fetchSchedules()
     
-    // Debug: log the loaded data
-    console.log('Schedules loaded:', adminStore.schedules?.length || 0)
-    console.log('Sources loaded:', adminStore.sources?.length || 0)
-    console.log('Tenants loaded:', adminStore.tenants?.length || 0)
   } catch (error) {
     console.error('Failed to load data:', error)
   } finally {

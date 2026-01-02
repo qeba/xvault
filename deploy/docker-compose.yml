@@ -40,22 +40,56 @@ services:
       redis:
         condition: service_healthy
 
-  worker:
+  worker-1:
     build:
       context: ..
       dockerfile: deploy/docker/worker/Dockerfile
     network_mode: host
     environment:
-      WORKER_ID: ${WORKER_ID}
+      WORKER_ID: worker-1
       REDIS_URL: ${REDIS_URL}
-      WORKER_STORAGE_BASE: ${WORKER_STORAGE_BASE}
+      WORKER_STORAGE_BASE: /var/lib/xvault/backups
       HUB_BASE_URL: http://localhost:8080
       WORKER_ENCRYPTION_KEK: ${WORKER_ENCRYPTION_KEK}
     depends_on:
       hub:
         condition: service_started
     volumes:
-      - xvault_worker_backups:${WORKER_STORAGE_BASE}
+      - xvault_worker1_backups:/var/lib/xvault/backups
+
+  worker-2:
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker/Dockerfile
+    network_mode: host
+    environment:
+      WORKER_ID: worker-2
+      REDIS_URL: ${REDIS_URL}
+      WORKER_STORAGE_BASE: /var/lib/xvault/backups
+      HUB_BASE_URL: http://localhost:8080
+      WORKER_ENCRYPTION_KEK: ${WORKER_ENCRYPTION_KEK}
+    depends_on:
+      hub:
+        condition: service_started
+    volumes:
+      - xvault_worker2_backups:/var/lib/xvault/backups
+
+  worker-3:
+    build:
+      context: ..
+      dockerfile: deploy/docker/worker/Dockerfile
+    network_mode: host
+    environment:
+      WORKER_ID: worker-3
+      REDIS_URL: ${REDIS_URL}
+      WORKER_STORAGE_BASE: /var/lib/xvault/backups
+      HUB_BASE_URL: http://localhost:8080
+      WORKER_ENCRYPTION_KEK: ${WORKER_ENCRYPTION_KEK}
+    depends_on:
+      hub:
+        condition: service_started
+    volumes:
+      - xvault_worker3_backups:/var/lib/xvault/backups
 
   restore:
     build:
@@ -65,14 +99,14 @@ services:
     environment:
       RESTORE_SERVICE_ID: ${RESTORE_SERVICE_ID}
       HUB_BASE_URL: http://localhost:8080
-      WORKER_STORAGE_BASE: ${WORKER_STORAGE_BASE}
+      WORKER_STORAGE_BASE: /var/lib/xvault/backups
       RESTORE_DOWNLOAD_ADDR: ${RESTORE_DOWNLOAD_ADDR}
       RESTORE_DOWNLOAD_BASE_URL: ${RESTORE_DOWNLOAD_BASE_URL}
     depends_on:
       hub:
         condition: service_started
     volumes:
-      - xvault_worker_backups:${WORKER_STORAGE_BASE}:ro
+      - xvault_worker1_backups:/var/lib/xvault/backups:ro
       - xvault_restore_downloads:/var/lib/xvault/downloads
 
   web:
@@ -87,5 +121,7 @@ services:
 
 volumes:
   xvault_postgres:
-  xvault_worker_backups:
+  xvault_worker1_backups:
+  xvault_worker2_backups:
+  xvault_worker3_backups:
   xvault_restore_downloads:

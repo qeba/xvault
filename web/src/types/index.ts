@@ -302,11 +302,38 @@ export interface UpdateSettingRequest {
 }
 
 // Worker types
+export type WorkerStatus = 'online' | 'offline' | 'draining'
+export type WorkerHealth = 'healthy' | 'warning' | 'critical' | 'offline'
+
+export interface SystemMetrics {
+  cpu_percent: number
+  memory_percent: number
+  memory_total_bytes: number
+  memory_used_bytes: number
+  disk_total_bytes: number
+  disk_used_bytes: number
+  disk_free_bytes: number
+  disk_percent: number
+  active_jobs: number
+  uptime_seconds: number
+}
+
 export interface Worker {
   id: string
-  status: 'active' | 'inactive'
-  last_heartbeat_at: string | null
-  capabilities: string[]
+  name: string
+  status: WorkerStatus
+  health: WorkerHealth
+  capabilities: Record<string, unknown>
+  storage_base_path: string
+  system_metrics?: SystemMetrics
+  last_seen_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkersResponse {
+  workers: Worker[]
+  total: number
 }
 
 // Restore Job types
@@ -343,4 +370,70 @@ export interface LogsResponse {
   total: number
   limit: number
   offset: number
+}
+
+// System logs query parameters
+export interface SystemLogsParams {
+  limit?: number
+  offset?: number
+  level?: LogLevel | 'all'
+  search?: string
+  worker_id?: string
+  job_id?: string
+  snapshot_id?: string
+  source_id?: string
+  schedule_id?: string
+}
+
+// Audit Event types
+export type AuditAction = 
+  | 'create_source'
+  | 'update_source'
+  | 'delete_source'
+  | 'create_schedule'
+  | 'update_schedule'
+  | 'delete_schedule'
+  | 'delete_snapshot'
+  | 'trigger_backup'
+  | 'create_tenant'
+  | 'delete_tenant'
+  | 'create_user'
+  | 'update_user'
+  | 'delete_user'
+  | 'update_setting'
+  | 'login'
+  | 'logout'
+
+export type AuditTargetType = 'source' | 'schedule' | 'snapshot' | 'tenant' | 'user' | 'setting'
+
+export interface AuditEvent {
+  id: string
+  tenant_id?: string
+  actor_user_id?: string
+  actor_email?: string
+  action: AuditAction
+  target_type?: AuditTargetType
+  target_id?: string
+  target_name?: string
+  details?: Record<string, unknown>
+  ip_address?: string
+  created_at: string
+}
+
+export interface AuditEventsResponse {
+  events: AuditEvent[]
+  total: number
+  limit: number
+  offset: number
+}
+
+// Audit events query parameters
+export interface AuditEventsParams {
+  limit?: number
+  offset?: number
+  action?: AuditAction
+  target_type?: AuditTargetType
+  actor_id?: string
+  tenant_id?: string
+  search?: string
 }

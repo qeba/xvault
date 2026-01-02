@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"xvault/pkg/types"
@@ -556,6 +557,7 @@ type Worker struct {
 	Status          string          `json:"status"`
 	Capabilities    json.RawMessage `json:"capabilities"`
 	StorageBasePath string          `json:"storage_base_path"`
+	SystemMetrics   json.RawMessage `json:"system_metrics,omitempty"`
 	LastSeenAt      *time.Time      `json:"last_seen_at,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
@@ -588,17 +590,18 @@ func (r *Repository) RegisterWorker(ctx context.Context, workerID, name, storage
 	return &worker, nil
 }
 
-// UpdateWorkerHeartbeat updates the worker's last_seen timestamp
-func (r *Repository) UpdateWorkerHeartbeat(ctx context.Context, workerID, status string) error {
+// UpdateWorkerHeartbeat updates the worker's last_seen timestamp and system metrics
+func (r *Repository) UpdateWorkerHeartbeat(ctx context.Context, workerID, status string, systemMetrics json.RawMessage) error {
 	now := time.Now()
 
 	query := `UPDATE workers
 	          SET last_seen_at = $1,
 	              status = $2,
+	              system_metrics = COALESCE($3, system_metrics),
 	              updated_at = $1
-	          WHERE id = $3`
+	          WHERE id = $4`
 
-	_, err := r.db.ExecContext(ctx, query, now, status, workerID)
+	_, err := r.db.ExecContext(ctx, query, now, status, systemMetrics, workerID)
 	if err != nil {
 		return fmt.Errorf("failed to update worker heartbeat: %w", err)
 	}
@@ -608,18 +611,43 @@ func (r *Repository) UpdateWorkerHeartbeat(ctx context.Context, workerID, status
 
 // GetWorker retrieves a worker by ID
 func (r *Repository) GetWorker(ctx context.Context, workerID string) (*Worker, error) {
-	query := `SELECT id, name, status, capabilities, storage_base_path, last_seen_at, created_at, updated_at
+	query := `SELECT id, name, status, capabilities, storage_base_path, system_metrics, last_seen_at, created_at, updated_at
 	          FROM workers WHERE id = $1`
 
 	var worker Worker
 	err := r.db.QueryRowContext(ctx, query, workerID).Scan(
-		&worker.ID, &worker.Name, &worker.Status, &worker.Capabilities, &worker.StorageBasePath, &worker.LastSeenAt, &worker.CreatedAt, &worker.UpdatedAt,
+		&worker.ID, &worker.Name, &worker.Status, &worker.Capabilities, &worker.StorageBasePath, &worker.SystemMetrics, &worker.LastSeenAt, &worker.CreatedAt, &worker.UpdatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get worker: %w", err)
 	}
 
 	return &worker, nil
+}
+
+// ListWorkers retrieves all workers
+func (r *Repository) ListWorkers(ctx context.Context) ([]*Worker, error) {
+	query := `SELECT id, name, status, capabilities, storage_base_path, system_metrics, last_seen_at, created_at, updated_at
+	          FROM workers ORDER BY name ASC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list workers: %w", err)
+	}
+	defer rows.Close()
+
+	var workers []*Worker
+	for rows.Next() {
+		var worker Worker
+		if err := rows.Scan(
+			&worker.ID, &worker.Name, &worker.Status, &worker.Capabilities, &worker.StorageBasePath, &worker.SystemMetrics, &worker.LastSeenAt, &worker.CreatedAt, &worker.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan worker: %w", err)
+		}
+		workers = append(workers, &worker)
+	}
+
+	return workers, nil
 }
 
 // Schedule represents a schedule record with retention policy
@@ -1820,4 +1848,274 @@ func (r *Repository) ListLogsForSourceWithJobs(ctx context.Context, sourceID str
 	}
 
 	return logs, nil
+}
+
+// ListAllLogsAdminParams contains parameters for listing all logs
+type ListAllLogsAdminParams struct {
+	Limit      int
+	Offset     int
+	Level      string // Filter by level: debug, info, warn, error
+	Search     string // Search in message
+	WorkerID   string // Filter by worker_id
+	JobID      string // Filter by job_id
+	SnapshotID string // Filter by snapshot_id
+	SourceID   string // Filter by source_id
+	ScheduleID string // Filter by schedule_id
+}
+
+// ListAllLogsAdminResult contains the result of listing all logs
+type ListAllLogsAdminResult struct {
+	Logs  []*LogEntry `json:"logs"`
+	Total int         `json:"total"`
+}
+
+// ListAllLogsAdmin retrieves all logs across the system with filtering and pagination (admin only)
+func (r *Repository) ListAllLogsAdmin(ctx context.Context, params ListAllLogsAdminParams) (*ListAllLogsAdminResult, error) {
+	if params.Limit <= 0 {
+		params.Limit = 100
+	}
+	if params.Limit > 1000 {
+		params.Limit = 1000
+	}
+
+	// Build dynamic query with filters
+	baseQuery := `SELECT id, timestamp, level, message, worker_id, job_id, snapshot_id, source_id, schedule_id, details, created_at FROM logs`
+	countQuery := `SELECT COUNT(*) FROM logs`
+	whereClause := ""
+	args := []interface{}{}
+	argIndex := 1
+
+	// Build WHERE clause based on filters
+	filters := []string{}
+
+	if params.Level != "" && params.Level != "all" {
+		filters = append(filters, fmt.Sprintf("level = $%d", argIndex))
+		args = append(args, params.Level)
+		argIndex++
+	}
+
+	if params.Search != "" {
+		filters = append(filters, fmt.Sprintf("message ILIKE $%d", argIndex))
+		args = append(args, "%"+params.Search+"%")
+		argIndex++
+	}
+
+	if params.WorkerID != "" {
+		filters = append(filters, fmt.Sprintf("worker_id = $%d", argIndex))
+		args = append(args, params.WorkerID)
+		argIndex++
+	}
+
+	if params.JobID != "" {
+		filters = append(filters, fmt.Sprintf("job_id = $%d", argIndex))
+		args = append(args, params.JobID)
+		argIndex++
+	}
+
+	if params.SnapshotID != "" {
+		filters = append(filters, fmt.Sprintf("snapshot_id = $%d", argIndex))
+		args = append(args, params.SnapshotID)
+		argIndex++
+	}
+
+	if params.SourceID != "" {
+		filters = append(filters, fmt.Sprintf("source_id = $%d", argIndex))
+		args = append(args, params.SourceID)
+		argIndex++
+	}
+
+	if params.ScheduleID != "" {
+		filters = append(filters, fmt.Sprintf("schedule_id = $%d", argIndex))
+		args = append(args, params.ScheduleID)
+		argIndex++
+	}
+
+	if len(filters) > 0 {
+		whereClause = " WHERE " + strings.Join(filters, " AND ")
+	}
+
+	// Get total count
+	var total int
+	err := r.db.QueryRowContext(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count logs: %w", err)
+	}
+
+	// Add ORDER BY, LIMIT, and OFFSET
+	finalQuery := baseQuery + whereClause + fmt.Sprintf(" ORDER BY timestamp DESC LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
+	args = append(args, params.Limit, params.Offset)
+
+	rows, err := r.db.QueryContext(ctx, finalQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list logs: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []*LogEntry
+	for rows.Next() {
+		var log LogEntry
+		var details sql.NullString
+		err := rows.Scan(
+			&log.ID, &log.Timestamp, &log.Level, &log.Message, &log.WorkerID, &log.JobID,
+			&log.SnapshotID, &log.SourceID, &log.ScheduleID, &details, &log.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan log: %w", err)
+		}
+		if details.Valid {
+			log.Details = json.RawMessage(details.String)
+		}
+		logs = append(logs, &log)
+	}
+
+	return &ListAllLogsAdminResult{
+		Logs:  logs,
+		Total: total,
+	}, nil
+}
+
+// ==================== AUDIT EVENTS ====================
+
+// AuditEvent represents an audit event record
+type AuditEvent struct {
+	ID          string          `json:"id"`
+	TenantID    *string         `json:"tenant_id,omitempty"`
+	ActorUserID *string         `json:"actor_user_id,omitempty"`
+	ActorEmail  *string         `json:"actor_email,omitempty"` // Populated by JOIN
+	Action      string          `json:"action"`
+	TargetType  *string         `json:"target_type,omitempty"`
+	TargetID    *string         `json:"target_id,omitempty"`
+	TargetName  *string         `json:"target_name,omitempty"` // Name/label of the target for display
+	Details     json.RawMessage `json:"details,omitempty"`
+	IPAddress   *string         `json:"ip_address,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+// CreateAuditEvent creates a new audit event
+func (r *Repository) CreateAuditEvent(ctx context.Context, tenantID, actorUserID *string, action string, targetType, targetID, targetName *string, details json.RawMessage, ipAddress *string) (*AuditEvent, error) {
+	id := uuid.New().String()
+	now := time.Now()
+
+	query := `INSERT INTO audit_events (id, tenant_id, actor_user_id, action, target_type, target_id, ip, created_at)
+	          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	          RETURNING id, tenant_id, actor_user_id, action, target_type, target_id, ip, created_at`
+
+	var event AuditEvent
+	err := r.db.QueryRowContext(ctx, query, id, tenantID, actorUserID, action, targetType, targetID, ipAddress, now).Scan(
+		&event.ID, &event.TenantID, &event.ActorUserID, &event.Action, &event.TargetType, &event.TargetID, &event.IPAddress, &event.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create audit event: %w", err)
+	}
+	event.TargetName = targetName
+	event.Details = details
+
+	return &event, nil
+}
+
+// ListAuditEventsParams contains parameters for listing audit events
+type ListAuditEventsParams struct {
+	Limit      int
+	Offset     int
+	Action     string // Filter by action (e.g., "delete_source", "update_schedule")
+	TargetType string // Filter by target type (e.g., "source", "schedule", "snapshot")
+	ActorID    string // Filter by actor user ID
+	TenantID   string // Filter by tenant ID
+	Search     string // Search in action or target_name
+}
+
+// ListAuditEventsResult contains the result of listing audit events
+type ListAuditEventsResult struct {
+	Events []*AuditEvent `json:"events"`
+	Total  int           `json:"total"`
+}
+
+// ListAuditEventsAdmin retrieves all audit events with filtering and pagination (admin only)
+func (r *Repository) ListAuditEventsAdmin(ctx context.Context, params ListAuditEventsParams) (*ListAuditEventsResult, error) {
+	if params.Limit <= 0 {
+		params.Limit = 100
+	}
+	if params.Limit > 1000 {
+		params.Limit = 1000
+	}
+
+	// Build dynamic query with filters
+	baseQuery := `SELECT ae.id, ae.tenant_id, ae.actor_user_id, u.email as actor_email, ae.action, ae.target_type, ae.target_id, ae.ip, ae.created_at
+	              FROM audit_events ae
+	              LEFT JOIN users u ON ae.actor_user_id = u.id`
+	countQuery := `SELECT COUNT(*) FROM audit_events ae`
+	whereClause := ""
+	args := []interface{}{}
+	argIndex := 1
+
+	// Build WHERE clause based on filters
+	filters := []string{}
+
+	if params.Action != "" {
+		filters = append(filters, fmt.Sprintf("ae.action = $%d", argIndex))
+		args = append(args, params.Action)
+		argIndex++
+	}
+
+	if params.TargetType != "" {
+		filters = append(filters, fmt.Sprintf("ae.target_type = $%d", argIndex))
+		args = append(args, params.TargetType)
+		argIndex++
+	}
+
+	if params.ActorID != "" {
+		filters = append(filters, fmt.Sprintf("ae.actor_user_id = $%d", argIndex))
+		args = append(args, params.ActorID)
+		argIndex++
+	}
+
+	if params.TenantID != "" {
+		filters = append(filters, fmt.Sprintf("ae.tenant_id = $%d", argIndex))
+		args = append(args, params.TenantID)
+		argIndex++
+	}
+
+	if params.Search != "" {
+		filters = append(filters, fmt.Sprintf("(ae.action ILIKE $%d)", argIndex))
+		args = append(args, "%"+params.Search+"%")
+		argIndex++
+	}
+
+	if len(filters) > 0 {
+		whereClause = " WHERE " + strings.Join(filters, " AND ")
+	}
+
+	// Get total count
+	var total int
+	err := r.db.QueryRowContext(ctx, countQuery+whereClause, args...).Scan(&total)
+	if err != nil {
+		return nil, fmt.Errorf("failed to count audit events: %w", err)
+	}
+
+	// Add ORDER BY, LIMIT, and OFFSET
+	finalQuery := baseQuery + whereClause + fmt.Sprintf(" ORDER BY ae.created_at DESC LIMIT $%d OFFSET $%d", argIndex, argIndex+1)
+	args = append(args, params.Limit, params.Offset)
+
+	rows, err := r.db.QueryContext(ctx, finalQuery, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list audit events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*AuditEvent
+	for rows.Next() {
+		var event AuditEvent
+		err := rows.Scan(
+			&event.ID, &event.TenantID, &event.ActorUserID, &event.ActorEmail, &event.Action, &event.TargetType, &event.TargetID, &event.IPAddress, &event.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan audit event: %w", err)
+		}
+		events = append(events, &event)
+	}
+
+	return &ListAuditEventsResult{
+		Events: events,
+		Total:  total,
+	}, nil
 }

@@ -341,17 +341,32 @@ type WorkerRegisterRequest struct {
 }
 
 type WorkerHeartbeatRequest struct {
-	WorkerID string `json:"worker_id"`
-	Status   string `json:"status"`
+	WorkerID      string         `json:"worker_id"`
+	Status        string         `json:"status"`
+	SystemMetrics *SystemMetrics `json:"system_metrics,omitempty"`
+}
+
+// SystemMetrics contains system resource usage information
+type SystemMetrics struct {
+	CPUPercent       float64 `json:"cpu_percent"`
+	MemoryPercent    float64 `json:"memory_percent"`
+	MemoryTotalBytes int64   `json:"memory_total_bytes"`
+	MemoryUsedBytes  int64   `json:"memory_used_bytes"`
+	DiskTotalBytes   int64   `json:"disk_total_bytes"`
+	DiskUsedBytes    int64   `json:"disk_used_bytes"`
+	DiskFreeBytes    int64   `json:"disk_free_bytes"`
+	DiskPercent      float64 `json:"disk_percent"`
+	ActiveJobs       int     `json:"active_jobs"`
+	UptimeSeconds    int64   `json:"uptime_seconds"`
 }
 
 type LogRequest struct {
-	Level       string          `json:"level"`
-	Message     string          `json:"message"`
-	WorkerID    *string         `json:"worker_id,omitempty"`
-	JobID       *string         `json:"job_id,omitempty"`
-	SnapshotID  *string         `json:"snapshot_id,omitempty"`
-	SourceID    *string         `json:"source_id,omitempty"`
-	ScheduleID  *string         `json:"schedule_id,omitempty"`
-	Details     json.RawMessage `json:"details,omitempty"`
+	Level      string          `json:"level"`
+	Message    string          `json:"message"`
+	WorkerID   *string         `json:"worker_id,omitempty"`
+	JobID      *string         `json:"job_id,omitempty"`
+	SnapshotID *string         `json:"snapshot_id,omitempty"`
+	SourceID   *string         `json:"source_id,omitempty"`
+	ScheduleID *string         `json:"schedule_id,omitempty"`
+	Details    json.RawMessage `json:"details,omitempty"`
 }

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"xvault/internal/worker/client"
 	"xvault/internal/worker/connector"
+	"xvault/internal/worker/metrics"
 	"xvault/internal/worker/packager"
 	"xvault/internal/worker/storage"
 	"xvault/pkg/crypto"
@@ -17,22 +19,30 @@ import (
 
 // Orchestrator manages the worker job execution loop
 type Orchestrator struct {
-	workerID      string
-	hubClient     *client.HubClient
-	storage       *storage.Storage
-	encryptionKEK string
-	pollInterval  time.Duration
+	workerID         string
+	hubClient        *client.HubClient
+	storage          *storage.Storage
+	encryptionKEK    string
+	pollInterval     time.Duration
+	metricsCollector *metrics.Collector
+	activeJobs       int32
+	storageBasePath  string
 }
 
 // NewOrchestrator creates a new worker orchestrator
 func NewOrchestrator(workerID string, hubClient *client.HubClient, storageBase, encryptionKEK string) *Orchestrator {
-	return &Orchestrator{
-		workerID:      workerID,
-		hubClient:     hubClient,
-		storage:       storage.NewStorage(storageBase),
-		encryptionKEK: encryptionKEK,
-		pollInterval:  5 * time.Second,
+	o := &Orchestrator{
+		workerID:        workerID,
+		hubClient:       hubClient,
+		storage:         storage.NewStorage(storageBase),
+		encryptionKEK:   encryptionKEK,
+		pollInterval:    5 * time.Second,
+		storageBasePath: storageBase,
 	}
+	// Initialize metrics collector with pointer to active jobs counter
+	activeJobsPtr := new(int)
+	o.metricsCollector = metrics.NewCollector(storageBase, activeJobsPtr)
+	return o
 }
 
 // logToHub sends a log entry to the hub
@@ -108,11 +118,17 @@ func (o *Orchestrator) registerWorker(ctx context.Context) error {
 	return o.hubClient.RegisterWorker(ctx, req)
 }
 
-// sendHeartbeat sends a heartbeat to the hub
+// sendHeartbeat sends a heartbeat to the hub with system metrics
 func (o *Orchestrator) sendHeartbeat(ctx context.Context, status string) error {
+	// Collect system metrics
+	sysMetrics := o.metricsCollector.Collect()
+	// Update active jobs count from atomic counter
+	sysMetrics.ActiveJobs = int(atomic.LoadInt32(&o.activeJobs))
+
 	req := client.WorkerHeartbeatRequest{
-		WorkerID: o.workerID,
-		Status:   status,
+		WorkerID:      o.workerID,
+		Status:        status,
+		SystemMetrics: sysMetrics,
 	}
 	return o.hubClient.SendHeartbeat(ctx, req)
 }
@@ -125,6 +141,10 @@ func (o *Orchestrator) processNextJob(ctx context.Context) error {
 		// No job available is not an error
 		return nil
 	}
+
+	// Increment active jobs counter
+	atomic.AddInt32(&o.activeJobs, 1)
+	defer atomic.AddInt32(&o.activeJobs, -1)
 
 	log.Printf("worker %s claimed job %s (type: %s, tenant: %s)", o.workerID, claimResp.JobID, claimResp.Type, claimResp.TenantID)
 	o.logToHub(ctx, "info", fmt.Sprintf("claimed job %s (type: %s)", claimResp.JobID, claimResp.Type), &claimResp.JobID, nil, &claimResp.SourceID, nil, map[string]any{

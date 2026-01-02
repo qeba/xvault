@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/lib/api'
-import type { User, Tenant, Setting, Source, Schedule, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest, TestConnectionRequest, TestConnectionResult, AdminCreateScheduleRequest, AdminUpdateScheduleRequest, AdminSnapshot, LogEntry } from '@/types'
+import type { User, Tenant, Setting, Source, Schedule, AdminCreateUserRequest, AdminUpdateUserRequest, AdminCreateSourceRequest, AdminUpdateSourceRequest, TestConnectionRequest, TestConnectionResult, AdminCreateScheduleRequest, AdminUpdateScheduleRequest, AdminSnapshot, LogEntry, SystemLogsParams, LogsResponse, AuditEvent, AuditEventsParams, AuditEventsResponse } from '@/types'
 
 export const useAdminStore = defineStore('admin', () => {
   const users = ref<User[]>([])
@@ -10,6 +10,10 @@ export const useAdminStore = defineStore('admin', () => {
   const schedules = ref<Schedule[]>([])
   const snapshots = ref<AdminSnapshot[]>([])
   const settings = ref<Setting[]>([])
+  const systemLogs = ref<LogEntry[]>([])
+  const systemLogsTotal = ref(0)
+  const auditEvents = ref<AuditEvent[]>([])
+  const auditEventsTotal = ref(0)
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
@@ -513,6 +517,72 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  // System-wide logs (admin)
+  async function fetchSystemLogs(params: SystemLogsParams = {}): Promise<LogsResponse> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      // Build query string
+      const queryParams = new URLSearchParams()
+      if (params.limit) queryParams.set('limit', params.limit.toString())
+      if (params.offset) queryParams.set('offset', params.offset.toString())
+      if (params.level && params.level !== 'all') queryParams.set('level', params.level)
+      if (params.search) queryParams.set('search', params.search)
+      if (params.worker_id) queryParams.set('worker_id', params.worker_id)
+      if (params.job_id) queryParams.set('job_id', params.job_id)
+      if (params.snapshot_id) queryParams.set('snapshot_id', params.snapshot_id)
+      if (params.source_id) queryParams.set('source_id', params.source_id)
+      if (params.schedule_id) queryParams.set('schedule_id', params.schedule_id)
+
+      const queryString = queryParams.toString()
+      const url = `/v1/admin/logs${queryString ? `?${queryString}` : ''}`
+      
+      const response = await api.get<LogsResponse>(url)
+      systemLogs.value = response.data.logs || []
+      systemLogsTotal.value = response.data.total || 0
+      return response.data
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch system logs'
+      console.error('Failed to fetch system logs:', err)
+      return { logs: [], total: 0, limit: params.limit || 100, offset: params.offset || 0 }
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  // Audit events (admin)
+  async function fetchAuditEvents(params: AuditEventsParams = {}): Promise<AuditEventsResponse> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      // Build query string
+      const queryParams = new URLSearchParams()
+      if (params.limit) queryParams.set('limit', params.limit.toString())
+      if (params.offset) queryParams.set('offset', params.offset.toString())
+      if (params.action) queryParams.set('action', params.action)
+      if (params.target_type) queryParams.set('target_type', params.target_type)
+      if (params.actor_id) queryParams.set('actor_id', params.actor_id)
+      if (params.tenant_id) queryParams.set('tenant_id', params.tenant_id)
+      if (params.search) queryParams.set('search', params.search)
+
+      const queryString = queryParams.toString()
+      const url = `/v1/admin/audit${queryString ? `?${queryString}` : ''}`
+      
+      const response = await api.get<AuditEventsResponse>(url)
+      auditEvents.value = response.data.events || []
+      auditEventsTotal.value = response.data.total || 0
+      return response.data
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Failed to fetch audit events'
+      console.error('Failed to fetch audit events:', err)
+      return { events: [], total: 0, limit: params.limit || 100, offset: params.offset || 0 }
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     // State
     users,
@@ -521,6 +591,10 @@ export const useAdminStore = defineStore('admin', () => {
     schedules,
     snapshots,
     settings,
+    systemLogs,
+    systemLogsTotal,
+    auditEvents,
+    auditEventsTotal,
     isLoading,
     error,
     // Computed
@@ -563,5 +637,8 @@ export const useAdminStore = defineStore('admin', () => {
     // Logs
     fetchLogsForSnapshot,
     fetchLogsForSource,
+    fetchSystemLogs,
+    // Audit
+    fetchAuditEvents,
   }
 })
