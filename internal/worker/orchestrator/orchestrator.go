@@ -72,9 +72,27 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to register worker: %w", err)
 	}
 
-	// Start heartbeat ticker
-	heartbeatTicker := time.NewTicker(30 * time.Second)
-	defer heartbeatTicker.Stop()
+	// Send initial heartbeat
+	if err := o.sendHeartbeat(ctx, "online"); err != nil {
+		log.Printf("initial heartbeat failed: %v", err)
+	}
+
+	// Start heartbeat in separate goroutine so it continues during job processing
+	go func() {
+		heartbeatTicker := time.NewTicker(30 * time.Second)
+		defer heartbeatTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-heartbeatTicker.C:
+				if err := o.sendHeartbeat(ctx, "online"); err != nil {
+					log.Printf("heartbeat failed: %v", err)
+				}
+			}
+		}
+	}()
 
 	// Start job poll ticker
 	pollTicker := time.NewTicker(o.pollInterval)
@@ -85,11 +103,6 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			log.Printf("worker %s shutting down", o.workerID)
 			return nil
-
-		case <-heartbeatTicker.C:
-			if err := o.sendHeartbeat(ctx, "online"); err != nil {
-				log.Printf("heartbeat failed: %v", err)
-			}
 
 		case <-pollTicker.C:
 			// Try to claim and process a job

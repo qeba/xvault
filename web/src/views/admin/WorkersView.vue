@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useWorkersStore } from '@/stores/workers'
 import Card from '@/components/ui/card/Card.vue'
 import CardContent from '@/components/ui/card/CardContent.vue'
@@ -9,28 +10,43 @@ import Button from '@/components/ui/button/Button.vue'
 import type { Worker } from '@/types'
 
 const workersStore = useWorkersStore()
+const { workers, onlineWorkers, offlineWorkers, healthyWorkers, warningWorkers, criticalWorkers } = storeToRefs(workersStore)
 
 const isLoading = ref(true)
 const error = ref<string | null>(null)
 const selectedWorker = ref<Worker | null>(null)
-const autoRefreshEnabled = ref(true)
-let refreshInterval: ReturnType<typeof setInterval> | null = null
+const refreshInterval = ref<number>(0) // 0 = disabled, otherwise seconds
+let refreshTimer: ReturnType<typeof setInterval> | null = null
+
+const refreshOptions = [
+  { label: 'Off', value: 0 },
+  { label: '30s', value: 30 },
+  { label: '1m', value: 60 },
+  { label: '5m', value: 300 },
+]
 
 // Summary stats
-const totalWorkers = computed(() => workersStore.workers.length)
-const onlineCount = computed(() => workersStore.onlineWorkers.length)
-const offlineCount = computed(() => workersStore.offlineWorkers.length)
-const healthyCount = computed(() => workersStore.healthyWorkers.length)
-const warningCount = computed(() => workersStore.warningWorkers.length)
-const criticalCount = computed(() => workersStore.criticalWorkers.length)
+const totalWorkers = computed(() => workers.value.length)
+const onlineCount = computed(() => onlineWorkers.value.length)
+const offlineCount = computed(() => offlineWorkers.value.length)
+const healthyCount = computed(() => healthyWorkers.value.length)
+const warningCount = computed(() => warningWorkers.value.length)
+const criticalCount = computed(() => criticalWorkers.value.length)
 
 onMounted(async () => {
   await loadWorkers()
-  startAutoRefresh()
 })
 
 onUnmounted(() => {
   stopAutoRefresh()
+})
+
+// Watch for refresh interval changes
+watch(refreshInterval, (newVal) => {
+  stopAutoRefresh()
+  if (newVal > 0) {
+    startAutoRefresh(newVal)
+  }
 })
 
 async function loadWorkers() {
@@ -45,23 +61,21 @@ async function loadWorkers() {
   }
 }
 
-function startAutoRefresh() {
-  if (refreshInterval) return
-  refreshInterval = setInterval(async () => {
-    if (autoRefreshEnabled.value) {
-      try {
-        await workersStore.fetchWorkers()
-      } catch {
-        // Silently fail on background refresh
-      }
+function startAutoRefresh(intervalSecs: number) {
+  if (refreshTimer) return
+  refreshTimer = setInterval(async () => {
+    try {
+      await workersStore.fetchWorkers()
+    } catch {
+      // Silently fail on background refresh
     }
-  }, 30000) // Refresh every 30 seconds
+  }, intervalSecs * 1000)
 }
 
 function stopAutoRefresh() {
-  if (refreshInterval) {
-    clearInterval(refreshInterval)
-    refreshInterval = null
+  if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
   }
 }
 
@@ -130,14 +144,17 @@ function closeDetails() {
         <p class="text-muted-foreground">Monitor worker nodes and system resources</p>
       </div>
       <div class="flex items-center gap-4">
-        <label class="flex items-center gap-2 text-sm text-muted-foreground">
-          <input
-            v-model="autoRefreshEnabled"
-            type="checkbox"
-            class="rounded border-gray-300"
-          />
-          Auto-refresh
-        </label>
+        <div class="flex items-center gap-2">
+          <span class="text-sm text-muted-foreground">Auto-refresh:</span>
+          <select
+            v-model="refreshInterval"
+            class="text-sm border rounded-md px-2 py-1 bg-background"
+          >
+            <option v-for="opt in refreshOptions" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </option>
+          </select>
+        </div>
         <Button @click="loadWorkers" :disabled="isLoading">
           <svg v-if="isLoading" class="animate-spin -ml-1 mr-2 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -224,7 +241,7 @@ function closeDetails() {
       </CardHeader>
       <CardContent>
         <!-- Loading State -->
-        <div v-if="isLoading && workersStore.workers.length === 0" class="text-center py-8 text-muted-foreground">
+        <div v-if="isLoading && workers.length === 0" class="text-center py-8 text-muted-foreground">
           <svg class="animate-spin h-8 w-8 mx-auto mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
@@ -233,7 +250,7 @@ function closeDetails() {
         </div>
 
         <!-- Empty State -->
-        <div v-else-if="workersStore.workers.length === 0" class="text-center py-8 text-muted-foreground">
+        <div v-else-if="workers.length === 0" class="text-center py-8 text-muted-foreground">
           <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto mb-4 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
           </svg>
@@ -258,7 +275,7 @@ function closeDetails() {
             </thead>
             <tbody>
               <tr
-                v-for="worker in workersStore.workers"
+                v-for="worker in workers"
                 :key="worker.id"
                 class="border-b last:border-0 hover:bg-muted/50 cursor-pointer"
                 @click="viewWorkerDetails(worker)"

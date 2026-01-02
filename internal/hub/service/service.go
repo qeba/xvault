@@ -2084,6 +2084,7 @@ func (s *Service) CreateLog(ctx context.Context, req CreateLogRequest) error {
 
 // GetLogsForSnapshot retrieves logs for a specific snapshot
 // It queries by both snapshot_id and the snapshot's job_id to get all related logs
+// For failed jobs (which don't have snapshot records), it queries by job_id directly
 func (s *Service) GetLogsForSnapshot(ctx context.Context, snapshotID string, limit int) ([]*repository.LogEntry, error) {
 	if limit <= 0 {
 		limit = 100
@@ -2092,10 +2093,12 @@ func (s *Service) GetLogsForSnapshot(ctx context.Context, snapshotID string, lim
 	// Get the snapshot to find its job_id
 	snapshot, err := s.repo.GetSnapshot(ctx, snapshotID)
 	if err != nil {
-		// If snapshot not found, still try to find logs by snapshot_id
-		logs, logErr := s.repo.ListLogsForSnapshot(ctx, snapshotID, limit)
+		// Snapshot not found - this might be a failed job that never created a snapshot.
+		// In this case, the provided "snapshotID" is actually a job_id.
+		// Query logs by treating the ID as a job_id.
+		logs, logErr := s.repo.ListLogsForJob(ctx, snapshotID, limit)
 		if logErr != nil {
-			return nil, fmt.Errorf("failed to get logs for snapshot: %w", logErr)
+			return nil, fmt.Errorf("failed to get logs for snapshot/job: %w", logErr)
 		}
 		return logs, nil
 	}

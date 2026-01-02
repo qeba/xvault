@@ -22,7 +22,8 @@ export const useWorkersStore = defineStore('workers', () => {
     error.value = null
     try {
       const response = await api.get<WorkersResponse>('/v1/admin/workers')
-      workers.value = response.data.workers
+      // Ensure we always assign an array (handle null/undefined)
+      workers.value = response.data.workers ?? []
     } catch (err: unknown) {
       error.value = err instanceof Error ? err.message : 'Failed to fetch workers'
       throw err

@@ -1769,6 +1769,45 @@ func (r *Repository) ListLogsForSnapshotWithJob(ctx context.Context, snapshotID,
 	return logs, nil
 }
 
+// ListLogsForJob retrieves logs for a specific job
+// This is used for failed jobs that don't have snapshot records
+func (r *Repository) ListLogsForJob(ctx context.Context, jobID string, limit int) ([]*LogEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	query := `SELECT id, timestamp, level, message, worker_id, job_id, snapshot_id, source_id, schedule_id, details, created_at
+	          FROM logs
+	          WHERE job_id = $1
+	          ORDER BY timestamp DESC
+	          LIMIT $2`
+
+	rows, err := r.db.QueryContext(ctx, query, jobID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list logs for job: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []*LogEntry
+	for rows.Next() {
+		var log LogEntry
+		var details sql.NullString
+		err := rows.Scan(
+			&log.ID, &log.Timestamp, &log.Level, &log.Message, &log.WorkerID, &log.JobID,
+			&log.SnapshotID, &log.SourceID, &log.ScheduleID, &details, &log.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan log: %w", err)
+		}
+		if details.Valid {
+			log.Details = json.RawMessage(details.String)
+		}
+		logs = append(logs, &log)
+	}
+
+	return logs, nil
+}
+
 // ListLogsForSource retrieves logs for a specific source
 func (r *Repository) ListLogsForSource(ctx context.Context, sourceID string, limit int) ([]*LogEntry, error) {
 	if limit <= 0 {

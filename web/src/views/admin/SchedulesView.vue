@@ -406,10 +406,10 @@ async function toggleStatus(schedule: Schedule) {
             <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">UTC Time</div>
             <div class="font-mono">{{ formatTime(currentTime, 'UTC') }}</div>
           </div>
-          <div class="bg-muted/50 px-3 py-2 rounded-lg">
+          <!-- <div class="bg-muted/50 px-3 py-2 rounded-lg">
             <div class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">Local Time</div>
             <div class="font-mono">{{ formatTime(currentTime) }}</div>
-          </div>
+          </div> -->
         </div>
       </div>
       <Button @click="openCreateDialog">
