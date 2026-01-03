@@ -120,7 +120,7 @@ func (o *Orchestrator) registerWorker(ctx context.Context) error {
 		Name:            fmt.Sprintf("Worker %s", o.workerID),
 		StorageBasePath: o.storage.SnapshotPath("", "", ""), // Get base path
 		Capabilities: map[string]any{
-			"connectors": []string{"ssh", "sftp"},
+			"connectors": []string{"ssh", "sftp", "mysql"},
 			"storage":    []string{"local_fs"},
 		},
 	}
@@ -210,8 +210,26 @@ func (o *Orchestrator) processNextJob(ctx context.Context) error {
 	return nil
 }
 
-// processBackupJob processes a backup job
+// processBackupJob processes a backup job by routing to the appropriate source handler
 func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClaimResponse) (client.JobCompleteRequest, error) {
+	// Route to appropriate handler based on source type
+	switch job.SourceType {
+	case string(types.SourceTypeSSH), string(types.SourceTypeSFTP):
+		return o.processSSHBackup(ctx, job)
+	case string(types.SourceTypeMySQL):
+		return o.processMySQLBackup(ctx, job)
+	default:
+		o.logToHub(ctx, "error", fmt.Sprintf("unsupported source type: %s", job.SourceType), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("unsupported source type: %s", job.SourceType),
+		}, fmt.Errorf("unsupported source type: %s", job.SourceType)
+	}
+}
+
+// processSSHBackup processes an SSH/SFTP backup job
+func (o *Orchestrator) processSSHBackup(ctx context.Context, job *client.JobClaimResponse) (client.JobCompleteRequest, error) {
 	startTime := time.Now()
 
 	// Generate snapshot ID
@@ -327,6 +345,177 @@ func (o *Orchestrator) processBackupJob(ctx context.Context, job *client.JobClai
 	// Package and encrypt
 	pkg := packager.NewPackager(keyResp.PublicKey)
 	pkgResult, err := pkg.PackageBackup(mirrorDir, snapshotID, job.TenantID, job.SourceID, job.JobID, o.workerID)
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to package backup: %v", err), &job.JobID, &snapshotID, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to package backup: %v", err),
+		}, err
+	}
+
+	// Write to local storage
+	localPath, sizeBytes, err := o.storage.WriteSnapshot(job.TenantID, job.SourceID, snapshotID, pkgResult.Artifact, pkgResult.Manifest)
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to write snapshot: %v", err), &job.JobID, &snapshotID, &job.SourceID, nil, map[string]any{
+			"local_path": localPath,
+			"size_bytes": sizeBytes,
+		})
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to write snapshot: %v", err),
+		}, err
+	}
+
+	log.Printf("snapshot %s written to %s (%d bytes)", snapshotID, localPath, sizeBytes)
+	o.logToHub(ctx, "info", fmt.Sprintf("snapshot %s written to %s (%d bytes)", snapshotID, localPath, sizeBytes), &job.JobID, &snapshotID, &job.SourceID, nil, map[string]any{
+		"local_path": localPath,
+		"size_bytes": sizeBytes,
+	})
+
+	// Build success response
+	finishTime := time.Now()
+	durationMs := finishTime.Sub(startTime).Milliseconds()
+
+	return client.JobCompleteRequest{
+		WorkerID: o.workerID,
+		Status:   "completed",
+		Snapshot: &client.SnapshotResult{
+			SnapshotID:          snapshotID,
+			Status:              "completed",
+			SizeBytes:           sizeBytes,
+			StartedAt:           startTime.Format(time.RFC3339),
+			FinishedAt:          finishTime.Format(time.RFC3339),
+			DurationMs:          durationMs,
+			ManifestJSON:        pkgResult.Manifest,
+			EncryptionAlgorithm: "age-x25519",
+			Locator: client.SnapshotLocator{
+				StorageBackend: "local_fs",
+				WorkerID:       o.workerID,
+				LocalPath:      localPath,
+			},
+		},
+	}, nil
+}
+
+// processMySQLBackup processes a MySQL/MariaDB backup job
+func (o *Orchestrator) processMySQLBackup(ctx context.Context, job *client.JobClaimResponse) (client.JobCompleteRequest, error) {
+	startTime := time.Now()
+
+	// Generate snapshot ID
+	snapshotID, err := storage.GenerateSnapshotID()
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to generate snapshot ID: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to generate snapshot ID: %v", err),
+		}, err
+	}
+
+	// Create temp directory
+	tempDir, err := o.storage.CreateTempDir(job.JobID)
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to create temp directory: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to create temp directory: %v", err),
+		}, err
+	}
+	defer o.storage.CleanupTempDir(tempDir)
+
+	// Parse source config
+	var sourceConfig types.SourceConfigMySQL
+	if err := json.Unmarshal(job.Payload.SourceConfig, &sourceConfig); err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to parse source config: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to parse source config: %v", err),
+		}, err
+	}
+
+	// Fetch credential from hub
+	credResp, err := o.hubClient.GetCredential(ctx, job.Payload.CredentialID)
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to get credential: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to get credential: %v", err),
+		}, err
+	}
+
+	// Decrypt credential using platform KEK
+	plaintext, err := crypto.DecryptFromStorage(credResp.Ciphertext, o.encryptionKEK)
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to decrypt credential: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to decrypt credential: %v", err),
+		}, err
+	}
+
+	password := string(plaintext)
+
+	// Fetch tenant public key for encrypting the backup
+	keyResp, err := o.hubClient.GetTenantPublicKey(ctx, job.TenantID)
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to get tenant public key: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to get tenant public key: %v", err),
+		}, err
+	}
+
+	// Create MySQL connector
+	mysqlConfig := &connector.MySQLConfig{
+		Host:     sourceConfig.Host,
+		Port:     sourceConfig.Port,
+		Database: sourceConfig.Database,
+		Username: sourceConfig.Username,
+		Password: password,
+	}
+	mysqlConn := connector.NewMySQLConnector(mysqlConfig)
+
+	// Connect to database
+	db, err := mysqlConn.Connect()
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to connect to database: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to connect to database: %v", err),
+		}, err
+	}
+	defer db.Close()
+
+	// Dump database to file
+	dumpPath := tempDir + "/dump.sql"
+	stats, err := mysqlConn.DumpDatabase(db, dumpPath)
+	if err != nil {
+		o.logToHub(ctx, "error", fmt.Sprintf("failed to dump database: %v", err), &job.JobID, nil, nil, nil, nil)
+		return client.JobCompleteRequest{
+			WorkerID: o.workerID,
+			Status:   "failed",
+			Error:    fmt.Sprintf("failed to dump database: %v", err),
+		}, err
+	}
+
+	log.Printf("dumped database %s (%d tables, %d rows, %d bytes)", stats.DatabaseName, stats.TablesProcessed, stats.TotalRows, stats.SizeBytes)
+	o.logToHub(ctx, "info", fmt.Sprintf("dumped database %s (%d tables, %d rows)", stats.DatabaseName, stats.TablesProcessed, stats.TotalRows), &job.JobID, nil, &job.SourceID, nil, map[string]any{
+		"tables_processed": stats.TablesProcessed,
+		"total_rows":       stats.TotalRows,
+		"size_bytes":       stats.SizeBytes,
+	})
+
+	// Package and encrypt
+	pkg := packager.NewPackager(keyResp.PublicKey)
+	pkgResult, err := pkg.PackageBackup(tempDir, snapshotID, job.TenantID, job.SourceID, job.JobID, o.workerID)
 	if err != nil {
 		o.logToHub(ctx, "error", fmt.Sprintf("failed to package backup: %v", err), &job.JobID, &snapshotID, nil, nil, nil)
 		return client.JobCompleteRequest{

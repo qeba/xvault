@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useAdminStore } from '@/stores/admin'
 import type { AdminSnapshot, LogEntry } from '@/types'
 import Button from '@/components/ui/button/Button.vue'
@@ -28,6 +28,10 @@ const isDownloading = ref(false)
 const isDeleting = ref(false)
 const deleteError = ref('')
 const downloadResult = ref<{ success: boolean; message: string; url?: string } | null>(null)
+
+// Pagination
+const currentPage = ref(1)
+const itemsPerPage = ref(20)
 
 // Filter options
 const statusFilterOptions: SelectOption[] = [
@@ -105,6 +109,54 @@ const filteredSnapshots = computed(() => {
 
   return result
 })
+
+// Pagination computed
+const totalPages = computed(() => Math.ceil(filteredSnapshots.value.length / itemsPerPage.value))
+
+const paginatedSnapshots = computed(() => {
+  const start = (currentPage.value - 1) * itemsPerPage.value
+  const end = start + itemsPerPage.value
+  return filteredSnapshots.value.slice(start, end)
+})
+
+const pageNumbers = computed(() => {
+  const pages: (number | string)[] = []
+  const maxVisible = 7
+  const total = totalPages.value
+
+  if (total <= maxVisible) {
+    for (let i = 1; i <= total; i++) {
+      pages.push(i)
+    }
+  } else {
+    if (currentPage.value <= 3) {
+      for (let i = 1; i <= 5; i++) pages.push(i)
+      pages.push('...')
+      pages.push(total)
+    } else if (currentPage.value >= total - 2) {
+      pages.push(1)
+      pages.push('...')
+      for (let i = total - 4; i <= total; i++) pages.push(i)
+    } else {
+      pages.push(1)
+      pages.push('...')
+      pages.push(currentPage.value - 1)
+      pages.push(currentPage.value)
+      pages.push(currentPage.value + 1)
+      pages.push('...')
+      pages.push(total)
+    }
+  }
+  return pages
+})
+
+// Reset to page 1 when filters or search changes
+function resetPage() {
+  currentPage.value = 1
+}
+
+// Watch for filter changes
+watch([searchQuery, statusFilter, tenantFilter, sourceFilter], resetPage)
 
 const snapshotStats = computed(() => ({
   total: adminStore.snapshots.length,
@@ -360,26 +412,27 @@ async function handleDelete() {
         <div v-else-if="filteredSnapshots.length === 0" class="p-8 text-center text-muted-foreground">
           No snapshots found. Backups will appear here once created.
         </div>
-        <div v-else class="overflow-x-auto">
-          <table class="w-full">
-            <thead class="border-b bg-muted/50">
-              <tr>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">ID</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Tenant</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Source</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Status</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Size</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Duration</th>
-                <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Created</th>
-                <th class="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y">
-              <tr
-                v-for="snapshot in filteredSnapshots"
-                :key="snapshot.id"
-                class="hover:bg-muted/50 transition-colors"
-              >
+        <div v-else>
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead class="border-b bg-muted/50">
+                <tr>
+                  <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">ID</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Tenant</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Source</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Status</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Size</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Duration</th>
+                  <th class="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider">Created</th>
+                  <th class="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y">
+                <tr
+                  v-for="snapshot in paginatedSnapshots"
+                  :key="snapshot.id"
+                  class="hover:bg-muted/50 transition-colors"
+                >
                 <td class="px-6 py-4 whitespace-nowrap">
                   <div class="text-sm font-mono text-xs">{{ snapshot.id.slice(0, 8) }}...</div>
                 </td>
@@ -445,6 +498,98 @@ async function handleDelete() {
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="flex flex-col sm:flex-row items-center justify-between px-6 py-4 border-t gap-4">
+          <div class="text-sm text-muted-foreground">
+            Showing {{ ((currentPage - 1) * itemsPerPage) + 1 }} to {{ Math.min(currentPage * itemsPerPage, filteredSnapshots.length) }} of {{ filteredSnapshots.length }} results
+          </div>
+
+          <div class="flex items-center gap-2">
+            <!-- Items per page selector -->
+            <select
+              v-model.number="itemsPerPage"
+              @change="resetPage"
+              class="h-8 px-2 text-sm border rounded-md bg-background"
+            >
+              <option :value="10">10 per page</option>
+              <option :value="20">20 per page</option>
+              <option :value="50">50 per page</option>
+              <option :value="100">100 per page</option>
+            </select>
+
+            <!-- Pagination buttons -->
+            <div class="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="currentPage === 1"
+                @click="currentPage = 1"
+                class="h-8 px-2"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                </svg>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="currentPage === 1"
+                @click="currentPage--"
+                class="h-8 px-2"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                </svg>
+              </Button>
+
+              <template v-for="page in pageNumbers" :key="page">
+                <Button
+                  v-if="page === '...'"
+                  variant="outline"
+                  size="sm"
+                  disabled
+                  class="h-8 px-3 cursor-default"
+                >
+                  ...
+                </Button>
+                <Button
+                  v-else
+                  :variant="page === currentPage ? 'default' : 'outline'"
+                  size="sm"
+                  @click="currentPage = page as number"
+                  class="h-8 w-9 p-0"
+                >
+                  {{ page }}
+                </Button>
+              </template>
+
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="currentPage === totalPages"
+                @click="currentPage++"
+                class="h-8 px-2"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                </svg>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                :disabled="currentPage === totalPages"
+                @click="currentPage = totalPages"
+                class="h-8 px-2"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                </svg>
+              </Button>
+            </div>
+          </div>
+        </div>
         </div>
       </CardContent>
     </Card>

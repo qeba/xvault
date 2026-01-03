@@ -36,8 +36,10 @@ type ErrorResponse struct {
 // sendError sends a JSON error response
 func sendError(c *fiber.Ctx, status int, err error, message string) error {
 	resp := ErrorResponse{
-		Error:   message,
-		Details: err.Error(),
+		Error: message,
+	}
+	if err != nil {
+		resp.Details = err.Error()
 	}
 	return c.Status(status).JSON(resp)
 }

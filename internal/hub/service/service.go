@@ -17,6 +17,8 @@ import (
 	"xvault/pkg/crypto"
 	"xvault/pkg/types"
 
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 	"github.com/pkg/sftp"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
@@ -274,13 +276,22 @@ func (s *Service) ClaimJob(ctx context.Context, req types.JobClaimRequest) (*typ
 
 	// Build response
 	sourceID := ""
+	var sourceType types.SourceType
 	if job.SourceID != nil {
 		sourceID = *job.SourceID
+		// Fetch source to get type
+		source, err := s.repo.GetSource(ctx, sourceID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get source: %w", err)
+		}
+		sourceType = types.SourceType(source.Type)
 	}
+
 	resp := &types.JobClaimResponse{
 		JobID:          job.ID,
 		TenantID:       job.TenantID,
 		SourceID:       sourceID,
+		SourceType:     sourceType,
 		Type:           types.JobType(job.Type),
 		Payload:        payload,
 		LeaseExpiresAt: job.LeaseExpiresAt.Format(time.RFC3339),
@@ -1783,25 +1794,58 @@ func (s *Service) testFTPConnection(ctx context.Context, req TestConnectionReque
 
 // testMySQLConnection tests MySQL connectivity
 func (s *Service) testMySQLConnection(ctx context.Context, req TestConnectionRequest, credential string) (*TestConnectionResult, error) {
-	// Simple TCP connection test for MySQL
-	address := fmt.Sprintf("%s:%d", req.Host, req.Port)
+	// Build MySQL DSN (Data Source Name)
+	// Format: username:password@tcp(host:port)/database
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)", req.Username, credential, req.Host, req.Port)
 
-	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	// Add database if specified
+	if req.Database != "" {
+		dsn += fmt.Sprintf("/%s", req.Database)
+	}
+
+	// Add connection parameters
+	dsn += "?parseTime=true&timeout=10s"
+
+	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return &TestConnectionResult{
 			Success: false,
-			Message: "Failed to connect to MySQL server",
+			Message: "Failed to create MySQL connection",
 			Details: err.Error(),
 		}, nil
 	}
-	conn.Close()
+	defer db.Close()
 
-	// Note: Full MySQL authentication test would require the MySQL driver
-	// For now, we verify the port is reachable
+	// Test the connection
+	if err := db.PingContext(ctx); err != nil {
+		return &TestConnectionResult{
+			Success: false,
+			Message: "MySQL connection failed",
+			Details: err.Error(),
+		}, nil
+	}
+
+	// Get MySQL version to confirm it's working
+	var version string
+	if err := db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&version); err != nil {
+		// Connection works but version query failed (still a success)
+		return &TestConnectionResult{
+			Success: true,
+			Message: "MySQL connection successful",
+			Details: fmt.Sprintf("Connected to %s:%d as %s", req.Host, req.Port, req.Username),
+		}, nil
+	}
+
+	// Detect if it's MariaDB or MySQL
+	dbType := "MySQL"
+	if strings.Contains(version, "MariaDB") {
+		dbType = "MariaDB"
+	}
+
 	return &TestConnectionResult{
 		Success: true,
-		Message: "MySQL port is reachable",
-		Details: fmt.Sprintf("Connected to %s (authentication not fully tested - requires MySQL driver)", address),
+		Message: fmt.Sprintf("%s connection successful", dbType),
+		Details: fmt.Sprintf("Connected to %s:%d as %s (version: %s)", req.Host, req.Port, req.Username, version),
 	}, nil
 }
 

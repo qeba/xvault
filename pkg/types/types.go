@@ -187,6 +187,7 @@ type JobClaimResponse struct {
 	JobID          string     `json:"job_id"`
 	TenantID       string     `json:"tenant_id"`
 	SourceID       string     `json:"source_id,omitempty"`
+	SourceType     SourceType `json:"source_type,omitempty"`
 	Type           JobType    `json:"type"`
 	Payload        JobPayload `json:"payload"`
 	LeaseExpiresAt string     `json:"lease_expires_at"`
