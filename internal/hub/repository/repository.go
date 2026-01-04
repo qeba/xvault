@@ -1376,10 +1376,20 @@ func (r *Repository) UpdateSourceCredential(ctx context.Context, sourceID, crede
 	return nil
 }
 
-// DeleteSource deletes a source
+// DeleteSource deletes a source and related jobs
+// Note: Snapshots are cascade deleted by the database ON DELETE CASCADE
+// Jobs are explicitly deleted here to prevent orphaned jobs from showing in admin views
 func (r *Repository) DeleteSource(ctx context.Context, sourceID string) error {
+	// First, delete all jobs related to this source (queued, running, failed, etc.)
+	// These don't cascade delete automatically, and leaving them creates orphans in admin views
+	_, err := r.db.ExecContext(ctx, `DELETE FROM jobs WHERE source_id = $1`, sourceID)
+	if err != nil {
+		return fmt.Errorf("failed to delete jobs for source: %w", err)
+	}
+
+	// Then delete the source (snapshots will cascade delete automatically)
 	query := `DELETE FROM sources WHERE id = $1`
-	_, err := r.db.ExecContext(ctx, query, sourceID)
+	_, err = r.db.ExecContext(ctx, query, sourceID)
 	if err != nil {
 		return fmt.Errorf("failed to delete source: %w", err)
 	}
